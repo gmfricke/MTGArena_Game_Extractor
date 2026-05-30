@@ -93,6 +93,8 @@ def extract_game_plays(
     seen_mulligans = set()
     seen_results = set()
     seen_choices = set()
+    seen_state_events = set()
+    active_effects = {}
     current_match = None
     current_turn = None
     last_game_state_id = None
@@ -167,6 +169,25 @@ def extract_game_plays(
     def emit(line=""):
         if current_match_lines is not None:
             current_match_lines.append(line)
+
+    def add_active_effect(key, text, source_id=None, until=None):
+        active_effects[key] = {
+            "text": text,
+            "source_id": source_id,
+            "until": until,
+        }
+
+    def remove_active_effects_for_source(source_id):
+        if source_id is None:
+            return
+        for key, effect in list(active_effects.items()):
+            if effect.get("source_id") == source_id:
+                active_effects.pop(key, None)
+
+    def remove_active_effects_with_prefix(prefix):
+        for key in list(active_effects):
+            if isinstance(key, tuple) and key[: len(prefix)] == prefix:
+                active_effects.pop(key, None)
 
     def detail_value(detail):
         if not detail:
@@ -362,6 +383,10 @@ def extract_game_plays(
         emit("Exile:")
         emit(f"  {owner_label(1)}: {compact_names(zone_names('ZoneType_Exile', 1))}")
         emit(f"  {owner_label(2)}: {compact_names(zone_names('ZoneType_Exile', 2))}")
+        if active_effects:
+            emit("Active Effects:")
+            for effect in sorted(active_effects.values(), key=lambda item: item["text"]):
+                emit(f"  {effect['text']}")
 
     def emit_zone_transfer(ann):
         details = detail_dict(ann.get("details"))
@@ -385,6 +410,7 @@ def extract_game_plays(
                 emit(f"{name} resolves")
         elif category in terminal_categories:
             emit(f"{owner} {terminal_categories[category]} {name}")
+            remove_active_effects_for_source(iid)
 
     def emit_life_change(ann, gsm):
         details = detail_dict(ann.get("details"))
@@ -433,6 +459,11 @@ def extract_game_plays(
         seen_choices.add(key)
 
         emit(f"{chooser} chooses {value_text} for {source} ({domain_text})")
+        if source == "Serra's Emissary" and domain == 4:
+            effect_text = f"{chooser} has protection from {value_text.lower()}s via {source}"
+            state_key = ("serra_protection", source_id)
+            add_active_effect(state_key, effect_text, source_id=source_id)
+            emit(effect_text)
 
     def emit_combat_events(gsm):
         if gsm.get("turnInfo", {}).get("phase") != "Phase_Combat":
@@ -460,6 +491,81 @@ def extract_game_plays(
                     if key not in seen_combat:
                         seen_combat.add(key)
                         emit(f"{card_label(iid)} blocks {card_label(attacker_id)}")
+
+    def emit_continuous_effect_events(gsm):
+        annotations = gsm.get("annotations") or []
+        if not annotations:
+            return
+
+        teferi_sources = {
+            ann.get("affectorId")
+            for ann in annotations
+            if "AnnotationType_PhasedOut" in set(ann.get("type") or [])
+            and card_label(ann.get("affectorId")) == "Teferi's Protection"
+        }
+        if teferi_sources:
+            phased_counts = Counter()
+            for ann in annotations:
+                if "AnnotationType_PhasedOut" not in set(ann.get("type") or []):
+                    continue
+                for affected_id in ann.get("affectedIds") or []:
+                    owner = object_owner(affected_id)
+                    if owner is not None:
+                        phased_counts[owner] += 1
+
+            for seat, count in sorted(phased_counts.items()):
+                source_id = next(iter(teferi_sources))
+                source = card_label(source_id)
+                label = owner_label(seat)
+                key = (current_match, gsm.get("gameStateId"), "teferi_phase", seat)
+                if key not in seen_state_events:
+                    seen_state_events.add(key)
+                    plural = "permanent" if count == 1 else "permanents"
+                    emit(f"{label} phases out {count} {plural} via {source}")
+
+                protection_text = (
+                    f"{label} has protection from everything until next turn via {source}"
+                )
+                life_text = (
+                    f"{label}'s life total can't change until next turn via {source}"
+                )
+                add_active_effect(
+                    ("teferi_protection", seat),
+                    protection_text,
+                    source_id=source_id,
+                    until="next_turn",
+                )
+                add_active_effect(
+                    ("teferi_life_total", seat),
+                    life_text,
+                    source_id=source_id,
+                    until="next_turn",
+                )
+                for text in (protection_text, life_text):
+                    state_key = (current_match, gsm.get("gameStateId"), text)
+                    if state_key not in seen_state_events:
+                        seen_state_events.add(state_key)
+                        emit(text)
+
+        phased_in_counts = Counter()
+        for ann in annotations:
+            if "AnnotationType_PhasedIn" not in set(ann.get("type") or []):
+                continue
+            for affected_id in ann.get("affectedIds") or []:
+                owner = object_owner(affected_id)
+                if owner is not None:
+                    phased_in_counts[owner] += 1
+
+        for seat, count in sorted(phased_in_counts.items()):
+            label = owner_label(seat)
+            key = (current_match, gsm.get("gameStateId"), "phase_in", seat)
+            if key in seen_state_events:
+                continue
+            seen_state_events.add(key)
+            plural = "permanent" if count == 1 else "permanents"
+            emit(f"{label}'s {count} phased-out {plural} phase in")
+            remove_active_effects_with_prefix(("teferi_protection", seat))
+            remove_active_effects_with_prefix(("teferi_life_total", seat))
 
     def update_state(gsm):
         for team in gsm.get("teams", []):
@@ -508,7 +614,10 @@ def extract_game_plays(
             reason_text = (reason or result_type or "unknown").replace("ResultReason_", "")
             reason_text = reason_text.replace("ResultType_", "").lower()
             emit("")
-            emit(f"Result ({scope_text}): {winner} wins by {reason_text}")
+            if reason_text == "concede":
+                emit(f"Winner ({scope_text}): {winner} (opponent conceded)")
+            else:
+                emit(f"Winner ({scope_text}): {winner} ({reason_text})")
 
     def record_debug(ann):
         details = detail_dict(ann.get("details"))
@@ -688,6 +797,7 @@ def extract_game_plays(
                     players.clear()
                     team_to_seats.clear()
                     seen_combat.clear()
+                    active_effects.clear()
                     emit(f"===== GAME {current_match_number}: MATCH {current_match} =====")
 
                 game_state_id = gsm.get("gameStateId")
@@ -717,6 +827,7 @@ def extract_game_plays(
 
                 event_index += 1
                 record_gameplay_event(msg, gsm)
+                emit_continuous_effect_events(gsm)
                 emit_combat_events(gsm)
 
                 for ann in gsm.get("annotations", []):
