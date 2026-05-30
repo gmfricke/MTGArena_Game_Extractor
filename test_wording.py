@@ -10,6 +10,7 @@ from mtga_extract_games import (
     phrase_concede_result,
     phrase_death,
     phrase_life_change,
+    phrase_library_count,
     phrase_player_has_counter,
     phrase_player_counter_change,
     phrase_player_action,
@@ -115,6 +116,11 @@ class WordingTests(unittest.TestCase):
             phrase_player_has_counter("Me", "poison", 6),
             "I have 6 poison counters",
         )
+
+    def test_library_count_wording(self):
+        self.assertEqual(phrase_library_count("Me", 1), "Me: 1 card")
+        self.assertEqual(phrase_library_count("Opponent", 42), "Opponent: 42 cards")
+        self.assertEqual(phrase_library_count("Player 1", None), "Player 1: unknown")
 
     def test_anonymous_resolve_suppression(self):
         self.assertFalse(should_emit_resolve_line("instance 729", 729))

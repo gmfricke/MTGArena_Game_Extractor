@@ -221,6 +221,14 @@ def active_effect_for_resolved_permanent(name: str, owner: str) -> str | None:
     return None
 
 
+def phrase_library_count(label: str, count: int | None) -> str:
+    """Render a player's library size for turn-state snapshots."""
+    if count is None:
+        return f"{label}: unknown"
+    plural = "" if count == 1 else "s"
+    return f"{label}: {count} card{plural}"
+
+
 def extract_game_plays(
     player_log: Path,
     grp_to_name: dict[int, str],
@@ -604,6 +612,13 @@ def extract_game_plays(
                 names.append(card_label_for_snapshot(instance_id))
         return names
 
+    def library_count(seat):
+        """Return the current number of objects in a player's library zone."""
+        for zone in zones.values():
+            if zone.get("type") == "ZoneType_Library" and zone.get("ownerSeatId") == seat:
+                return len(zone.get("objectInstanceIds") or [])
+        return None
+
     def infer_local_seat():
         """Infer the user's seat from the only hand that has visible card names."""
         candidates = []
@@ -623,6 +638,9 @@ def extract_game_plays(
         emit("Hands:")
         emit(f"  {owner_label(1)}: {compact_names(hand_names(1))}")
         emit(f"  {owner_label(2)}: {compact_names(hand_names(2))}")
+        emit("Library:")
+        emit(f"  {phrase_library_count(owner_label(1), library_count(1))}")
+        emit(f"  {phrase_library_count(owner_label(2), library_count(2))}")
         emit("Command:")
         emit(f"  {owner_label(1)}: {compact_names(zone_names('ZoneType_Command', 1))}")
         emit(f"  {owner_label(2)}: {compact_names(zone_names('ZoneType_Command', 2))}")
