@@ -1,6 +1,6 @@
 # MTGArena_Game_Extractor
 
-I wanted a tool that gave me my MTG Arena games in plain text so I could review them later and pass them into other software.
+I wanted a tool that gave me my MTG Arena games in plain text so I could review them later and pass them into other software. Since this tools is reading logs from a game with frequent updates I expect it to need updating a lot to keep up. 
 
 I could not find anything straightforward that did this, so I wrote this Python program.
 
@@ -60,9 +60,7 @@ If that command is not found, install Python from:
 https://www.python.org/downloads/
 ```
 
-There is no `pip install` step for this project.
-
-The examples below are for macOS because that is where I am using Arena. The code should work on Windows too, but the `Player.log` and card database paths will be different.
+The examples below are for macOS because I wrote the code on a Mac laptop. I'll get around to trying it out on windows. The code should work on Windows too, but the `Player.log` and card database paths will be different.
 
 Set paths for your Arena log and card database on macOS:
 
