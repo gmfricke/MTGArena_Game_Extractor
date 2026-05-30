@@ -229,6 +229,14 @@ def phrase_library_count(label: str, count: int | None) -> str:
     return f"{label}: {count} card{plural}"
 
 
+def is_low_fidelity_update_without_turn(gsm: dict) -> bool:
+    """Detect speculative Send updates that Arena may replace shortly after."""
+    if gsm.get("update") != "GameStateUpdate_Send":
+        return False
+    turn_info = gsm.get("turnInfo") or {}
+    return "turnNumber" not in turn_info and "phase" not in turn_info
+
+
 def extract_game_plays(
     player_log: Path,
     grp_to_name: dict[int, str],
@@ -258,6 +266,7 @@ def extract_game_plays(
     seen_no_combat_damage = set()
     remembered_object_labels = {}
     stack_display_names = {}
+    pending_stack_casts = {}
     active_effects = {}
     commander_grps_by_seat = {}
     commander_instance_ids = set()
@@ -405,7 +414,15 @@ def extract_game_plays(
         """Build a stable dedupe key for annotations with or without Arena ids."""
         ann_id = ann.get("id")
         if ann_id is not None:
-            return ("id", current_match, ann_id)
+            return (
+                "id_payload",
+                current_match,
+                ann_id,
+                tuple(ann.get("type") or []),
+                ann.get("affectorId"),
+                tuple(ann.get("affectedIds") or []),
+                normalize_for_key(ann.get("details") or []),
+            )
 
         # Older/current logs may omit annotation ids. Use the enclosing game
         # state plus annotation payload so one missing id does not suppress all
@@ -688,7 +705,13 @@ def extract_game_plays(
                 )
         return lines
 
-    def emit_zone_transfer(ann):
+    def flush_pending_stack_cast(instance_id):
+        """Emit a delayed speculative cast once Arena confirms it mattered."""
+        pending = pending_stack_casts.pop(instance_id, None)
+        if pending:
+            emit(phrase_player_action(pending["owner"], "cast", pending["text"]))
+
+    def emit_zone_transfer(ann, gsm):
         """Emit cast/play/zone-change lines, including command-zone casts."""
         details = detail_dict(ann.get("details"))
         category = details.get("category")
@@ -704,15 +727,21 @@ def extract_game_plays(
         if category == "PlayLand":
             emit(phrase_player_action(owner, "play", name))
         elif category == "CastSpell":
+            pending_stack_casts.pop(iid, None)
             stack_display_names[iid] = name
             suffix = " from command zone" if from_command else ""
             if from_command:
                 commander_text = note_commander_cast(iid, details.get("grpid"))
                 if commander_text:
                     suffix = f"{suffix}; {commander_text}"
-            emit(phrase_player_action(owner, "cast", f"{name}{suffix}"))
+            cast_text = f"{name}{suffix}"
+            if is_low_fidelity_update_without_turn(gsm):
+                pending_stack_casts[iid] = {"owner": owner, "text": cast_text}
+            else:
+                emit(phrase_player_action(owner, "cast", cast_text))
         elif category == "Resolve":
             name = resolve_stack_name(iid, name, stack_display_names)
+            flush_pending_stack_cast(iid)
             effect_text = active_effect_for_resolved_permanent(name, owner)
             if effect_text:
                 add_active_effect(("resolved_effect", iid, name), effect_text, source_id=iid)
@@ -729,6 +758,7 @@ def extract_game_plays(
                 stack_display_names[iid] = copy_name
                 remembered_object_labels[iid] = copy_name
         elif category in death_categories:
+            flush_pending_stack_cast(ann.get("affectorId"))
             controller = object_owner(iid)
             name = death_label_or_none(name, iid)
             if not name:
@@ -736,6 +766,7 @@ def extract_game_plays(
             emit(phrase_death(owner_label(controller) if controller else None, name))
             remove_active_effects_for_source(iid)
         elif category in {"Destroy", "DestroyNoRegenerate"}:
+            flush_pending_stack_cast(ann.get("affectorId"))
             source = source_label(ann.get("affectorId"))
             if source and ann.get("affectorId") != iid and source != name:
                 emit(phrase_zone_change(source, "destroy", name))
@@ -743,6 +774,7 @@ def extract_game_plays(
                 emit(phrase_zone_change(None, "destroy", name))
             remove_active_effects_for_source(iid)
         elif category == "Exile":
+            flush_pending_stack_cast(ann.get("affectorId"))
             source = source_label(ann.get("affectorId"))
             if source and ann.get("affectorId") != iid and source != name:
                 emit(phrase_zone_change(source, "exile", name))
@@ -750,6 +782,7 @@ def extract_game_plays(
                 emit(phrase_zone_change(None, "exile", name))
             remove_active_effects_for_source(iid)
         elif category == "Countered":
+            flush_pending_stack_cast(iid)
             emit(phrase_zone_change(None, "counter", name))
             remove_active_effects_for_source(iid)
         elif category == "Discard":
@@ -1318,6 +1351,7 @@ def extract_game_plays(
                     seen_no_combat_damage.clear()
                     remembered_object_labels.clear()
                     stack_display_names.clear()
+                    pending_stack_casts.clear()
                     active_effects.clear()
                     commander_grps_by_seat.clear()
                     commander_instance_ids.clear()
@@ -1369,7 +1403,7 @@ def extract_game_plays(
                     if "AnnotationType_ObjectIdChanged" in ann_types:
                         note_object_id_change(ann)
                     elif "AnnotationType_ZoneTransfer" in ann_types:
-                        emit_zone_transfer(ann)
+                        emit_zone_transfer(ann, gsm)
                     elif "AnnotationType_ModifiedLife" in ann_types:
                         emit_life_change(ann, gsm)
                     elif "AnnotationType_ChoiceResult" in ann_types:

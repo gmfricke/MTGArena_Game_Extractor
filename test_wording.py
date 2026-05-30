@@ -16,6 +16,7 @@ from mtga_extract_games import (
     phrase_player_action,
     phrase_zone_change,
     resolve_stack_name,
+    is_low_fidelity_update_without_turn,
     should_emit_resolve_line,
     subject_pronoun,
 )
@@ -121,6 +122,15 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(phrase_library_count("Me", 1), "Me: 1 card")
         self.assertEqual(phrase_library_count("Opponent", 42), "Opponent: 42 cards")
         self.assertEqual(phrase_library_count("Player 1", None), "Player 1: unknown")
+
+    def test_low_fidelity_update_without_turn_context_is_delayed(self):
+        self.assertTrue(is_low_fidelity_update_without_turn({"update": "GameStateUpdate_Send"}))
+        self.assertFalse(
+            is_low_fidelity_update_without_turn(
+                {"update": "GameStateUpdate_Send", "turnInfo": {"turnNumber": 8}}
+            )
+        )
+        self.assertFalse(is_low_fidelity_update_without_turn({"update": "GameStateUpdate_SendHiFi"}))
 
     def test_anonymous_resolve_suppression(self):
         self.assertFalse(should_emit_resolve_line("instance 729", 729))
