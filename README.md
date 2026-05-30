@@ -24,6 +24,8 @@ It also tries to capture player choices when Arena records them in the structure
 
 The parser is starting to track important continuous effects too. It can show active effects like protection from creatures from Serra's Emissary, and temporary effects from Teferi's Protection such as permanents phasing out, protection from everything, and the life total not changing until the next turn.
 
+It also tracks commander recasts, the next commander tax, and commander combat damage when those events are visible in Arena's game log. Player counters such as poison, energy, and experience are wired into the state model, but the parser only reports them when Arena exposes an unambiguous player counter event.
+
 ## Why This Is Interesting
 
 Arena games go by quickly, and the client does not give me a simple text transcript after the game. A plain text transcript is useful because I can:

@@ -2,9 +2,12 @@ import unittest
 
 from mtga_extract_plays import (
     object_pronoun,
+    phrase_commander_cast_note,
+    phrase_commander_damage,
     phrase_concede_result,
     phrase_death,
     phrase_life_change,
+    phrase_player_counter_change,
     phrase_player_action,
     phrase_zone_change,
     subject_pronoun,
@@ -73,6 +76,34 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(
             phrase_concede_result("Opponent", "game"),
             ["I concede", "Winner: Opponent"],
+        )
+
+    def test_commander_wording(self):
+        self.assertEqual(
+            phrase_commander_cast_note(2),
+            "commander cast #2; next commander tax +4",
+        )
+        self.assertEqual(
+            phrase_commander_damage("Giada, Font of Hope", 4, "Opponent", 8),
+            "Commander damage: Giada, Font of Hope deals 4 to Opponent (8 total)",
+        )
+        self.assertEqual(
+            phrase_commander_damage("Zacama, Primal Calamity", 7, "Me", 7),
+            "Commander damage: Zacama, Primal Calamity deals 7 to me (7 total)",
+        )
+
+    def test_player_counter_wording(self):
+        self.assertEqual(
+            phrase_player_counter_change("Me", "poison", 1, 1),
+            "I get 1 poison counter (1 total)",
+        )
+        self.assertEqual(
+            phrase_player_counter_change("Opponent", "energy", 2, 2),
+            "Opponent gets 2 energy counters (2 total)",
+        )
+        self.assertEqual(
+            phrase_player_counter_change("Me", "experience", -1, 0),
+            "I lose 1 experience counter (0 total)",
         )
 
 

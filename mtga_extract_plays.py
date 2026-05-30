@@ -70,14 +70,17 @@ def find_grp_ids_by_card_name(carddb_path: Path, card_name: str) -> dict[int, st
 
 
 def subject_pronoun(label: str) -> str:
+    """Return the narrative subject form for a player label."""
     return "I" if label == "Me" else label
 
 
 def object_pronoun(label: str) -> str:
+    """Return the narrative object form for a player label."""
     return "me" if label == "Me" else label
 
 
 def possessive_pronoun(label: str) -> str:
+    """Return a short possessive phrase for a player label."""
     if label == "Me":
         return "My"
     if label:
@@ -86,12 +89,14 @@ def possessive_pronoun(label: str) -> str:
 
 
 def present_tense_verb(label: str, base: str, third_person: str | None = None) -> str:
+    """Conjugate a simple present-tense verb for first-person Me vs others."""
     if label == "Me":
         return base
     return third_person or f"{base}s"
 
 
 def phrase_player_action(label: str, base_verb: str, rest: str, third_person=None) -> str:
+    """Build a deterministic narrative sentence for a player action."""
     return (
         f"{subject_pronoun(label)} "
         f"{present_tense_verb(label, base_verb, third_person)} {rest}"
@@ -99,6 +104,7 @@ def phrase_player_action(label: str, base_verb: str, rest: str, third_person=Non
 
 
 def phrase_life_change(label: str, delta: int, total=None) -> str:
+    """Render a life total change in the current narrative voice."""
     verb = "gain" if delta > 0 else "lose"
     amount = abs(delta)
     suffix = f" ({total})" if total is not None else ""
@@ -106,6 +112,7 @@ def phrase_life_change(label: str, delta: int, total=None) -> str:
 
 
 def phrase_death(controller_label: str | None, card_name: str) -> str:
+    """Render a permanent dying, using possessive attribution when known."""
     possessive = possessive_pronoun(controller_label or "")
     if not possessive:
         return f"{card_name} dies"
@@ -113,6 +120,7 @@ def phrase_death(controller_label: str | None, card_name: str) -> str:
 
 
 def phrase_zone_change(source: str | None, verb: str, target: str) -> str:
+    """Render destroy/exile/counter events with source attribution if known."""
     passive = {
         "destroy": "destroyed",
         "exile": "exiled",
@@ -124,6 +132,7 @@ def phrase_zone_change(source: str | None, verb: str, target: str) -> str:
 
 
 def phrase_concede_result(winner: str, scope_text: str) -> list[str]:
+    """Render concession results as two concise narrative lines."""
     loser = "Opponent" if winner == "Me" else "Me" if winner == "Opponent" else None
     if loser == "Me":
         concession = "I concede" if scope_text == "game" else "Match result: I conceded"
@@ -140,6 +149,31 @@ def phrase_concede_result(winner: str, scope_text: str) -> list[str]:
             else "Match result: opponent conceded"
         )
     return [concession, f"Winner: {winner}"]
+
+
+def phrase_commander_cast_note(cast_count: int) -> str:
+    """Render commander cast count and the tax that applies to the next cast."""
+    return f"commander cast #{cast_count}; next commander tax +{cast_count * 2}"
+
+
+def phrase_commander_damage(source: str, damage: int, target_label: str, total: int) -> str:
+    """Render commander damage with the running total against a player."""
+    return (
+        f"Commander damage: {source} deals {damage} to "
+        f"{object_pronoun(target_label)} ({total} total)"
+    )
+
+
+def phrase_player_counter_change(label: str, counter_name: str, amount: int, total: int) -> str:
+    """Render poison, energy, or experience counter changes on a player."""
+    verb = "get" if amount > 0 else "lose"
+    plural = "" if abs(amount) == 1 else "s"
+    return phrase_player_action(
+        label,
+        verb,
+        f"{abs(amount)} {counter_name} counter{plural} ({total} total)",
+        third_person="gets" if amount > 0 else "loses",
+    )
 
 
 def extract_game_plays(
@@ -167,7 +201,13 @@ def extract_game_plays(
     seen_results = set()
     seen_choices = set()
     seen_state_events = set()
+    seen_commander_damage = set()
     active_effects = {}
+    commander_grps_by_seat = {}
+    commander_instance_ids = set()
+    commander_cast_counts = Counter()
+    commander_damage = Counter()
+    player_counters = Counter()
     current_match = None
     current_turn = None
     last_game_state_id = None
@@ -232,12 +272,24 @@ def extract_game_plays(
             6: "Colorless",
         },
     }
+    player_counter_names = {
+        # These are intentionally conservative. Current sample logs did not
+        # expose poison, energy, or experience counters on players, so unknown
+        # numeric counter types are kept out of the transcript until observed.
+        "poison": "poison",
+        "energy": "energy",
+        "experience": "experience",
+        "CounterType_Poison": "poison",
+        "CounterType_Energy": "energy",
+        "CounterType_Experience": "experience",
+    }
 
     def emit(line=""):
         if current_match_lines is not None:
             current_match_lines.append(line)
 
     def add_active_effect(key, text, source_id=None, until=None):
+        """Record a major ongoing effect for turn-state summaries."""
         active_effects[key] = {
             "text": text,
             "source_id": source_id,
@@ -245,6 +297,7 @@ def extract_game_plays(
         }
 
     def remove_active_effects_for_source(source_id):
+        """Remove ongoing effects tied to a permanent that left its source zone."""
         if source_id is None:
             return
         for key, effect in list(active_effects.items()):
@@ -252,11 +305,13 @@ def extract_game_plays(
                 active_effects.pop(key, None)
 
     def remove_active_effects_with_prefix(prefix):
+        """Remove grouped effects such as Teferi's temporary effects."""
         for key in list(active_effects):
             if isinstance(key, tuple) and key[: len(prefix)] == prefix:
                 active_effects.pop(key, None)
 
     def detail_value(detail):
+        """Extract the scalar/list value from Arena's typed key-value details."""
         if not detail:
             return None
         for key in (
@@ -272,9 +327,11 @@ def extract_game_plays(
         return None
 
     def detail_dict(details):
+        """Convert Arena annotation details into a plain dict for easier parsing."""
         return {d.get("key"): detail_value(d) for d in details or []}
 
     def normalize_for_key(value):
+        """Create a hashable annotation key component while ignoring volatile fields."""
         if isinstance(value, dict):
             return tuple(
                 (k, normalize_for_key(v))
@@ -286,6 +343,7 @@ def extract_game_plays(
         return value
 
     def annotation_key(ann, gsm, msg):
+        """Build a stable dedupe key for annotations with or without Arena ids."""
         ann_id = ann.get("id")
         if ann_id is not None:
             return ("id", current_match, ann_id)
@@ -305,6 +363,7 @@ def extract_game_plays(
         )
 
     def owner_label(seat):
+        """Convert an Arena seat number to the user-facing player label."""
         if known_local_seat is not None:
             if seat == known_local_seat:
                 return "Me"
@@ -317,6 +376,7 @@ def extract_game_plays(
         return f"Seat {seat}"
 
     def team_label(team_id):
+        """Convert a team id to a player/team label for result reporting."""
         seats = team_to_seats.get(team_id) or []
         if len(seats) == 1:
             return owner_label(seats[0])
@@ -325,14 +385,17 @@ def extract_game_plays(
         return f"Team {team_id}"
 
     def zone_owner(zone_id):
+        """Return the seat that owns a zone, when Arena exposes one."""
         zone = zones.get(zone_id, {})
         return zone.get("ownerSeatId")
 
     def object_owner(instance_id):
+        """Return the controlling/owning seat for an object instance."""
         obj = objects.get(instance_id, {})
         return obj.get("controllerSeatId") or obj.get("ownerSeatId")
 
     def card_name_from_grp(grp_id):
+        """Translate an Arena grpId through the SQLite card database mapping."""
         if grp_id is None:
             return None
         try:
@@ -342,6 +405,7 @@ def extract_game_plays(
         return grp_to_name.get(grp_id, f"grpId {grp_id}")
 
     def card_label(instance_id, fallback_grp_id=None):
+        """Return a readable card label for an instance, falling back to grpId."""
         obj = objects.get(instance_id, {})
         return (
             card_name_from_grp(obj.get("grpId"))
@@ -351,11 +415,13 @@ def extract_game_plays(
         )
 
     def target_label(target_id):
+        """Render a combat or spell target in object case when it is a player."""
         if target_id in (1, 2):
             return object_pronoun(owner_label(target_id))
         return card_label(target_id)
 
     def source_label(instance_id):
+        """Return a source card name only when it is more useful than a raw id."""
         if instance_id is None:
             return None
         label = card_label(instance_id)
@@ -364,6 +430,7 @@ def extract_game_plays(
         return label
 
     def event_owner(ann, details):
+        """Infer the player responsible for a zone-transfer style event."""
         src_owner = zone_owner(details.get("zone_src"))
         dst_owner = zone_owner(details.get("zone_dest"))
         affected = ann.get("affectedIds") or []
@@ -372,9 +439,11 @@ def extract_game_plays(
         return owner_label(src_owner or dst_owner or affected_owner or affector_owner)
 
     def is_command_zone(zone_id):
+        """Return true when a zone id is Arena's shared command zone."""
         return zones.get(zone_id, {}).get("type") == "ZoneType_Command"
 
     def zone_ids_by_type(zone_type):
+        """Collect current zone ids of a given Arena zone type."""
         return {
             zone_id
             for zone_id, zone in zones.items()
@@ -382,6 +451,7 @@ def extract_game_plays(
         }
 
     def compact_names(names, unknown_label="unknown card"):
+        """Compact repeated card names for board-state summaries."""
         counts = Counter(name or unknown_label for name in names)
         if not counts:
             return "(empty)"
@@ -392,12 +462,14 @@ def extract_game_plays(
         return "; ".join(parts)
 
     def card_label_for_snapshot(instance_id):
+        """Return a snapshot label, preserving hidden cards as unknown."""
         obj = objects.get(instance_id, {})
         if not obj.get("grpId") and not obj.get("objectSourceGrpId"):
             return "unknown card"
         return card_label(instance_id)
 
     def battlefield_names(seat):
+        """Collect battlefield card/token names controlled by a seat."""
         battlefield_zone_ids = zone_ids_by_type("ZoneType_Battlefield")
         names = []
         for obj in objects.values():
@@ -411,6 +483,7 @@ def extract_game_plays(
         return names
 
     def zone_names(zone_type, seat=None):
+        """Collect card names from zones such as hand, graveyard, exile."""
         names = []
         for zone in zones.values():
             if zone.get("type") != zone_type:
@@ -422,6 +495,7 @@ def extract_game_plays(
         return names
 
     def hand_names(seat):
+        """Collect visible/hidden hand card labels for a seat."""
         names = []
         for zone in zones.values():
             if zone.get("type") != "ZoneType_Hand":
@@ -433,6 +507,7 @@ def extract_game_plays(
         return names
 
     def infer_local_seat():
+        """Infer the user's seat from the only hand that has visible card names."""
         candidates = []
         for seat in (1, 2):
             names = hand_names(seat)
@@ -441,6 +516,7 @@ def extract_game_plays(
         return candidates[0] if len(candidates) == 1 else None
 
     def emit_turn_state():
+        """Print the optional turn-start board and strategic state summary."""
         if not show_turn_state:
             return
         emit("Board:")
@@ -462,8 +538,43 @@ def extract_game_plays(
             emit("Active Effects:")
             for effect in sorted(active_effects.values(), key=lambda item: item["text"]):
                 emit(f"  {effect['text']}")
+        state_lines = strategic_state_lines()
+        if state_lines:
+            emit("Current State:")
+            for line in state_lines:
+                emit(f"  {line}")
+
+    def strategic_state_lines():
+        """Build a concise summary of counters and commander-related state."""
+        lines = []
+        for (seat, counter_name), amount in sorted(player_counters.items()):
+            if amount:
+                suffix = "" if amount == 1 else "s"
+                lines.append(f"{owner_label(seat)} has {amount} {counter_name} counter{suffix}")
+
+        for (seat, grp_id), count in sorted(commander_cast_counts.items()):
+            if count > 1:
+                tax = count * 2
+                lines.append(
+                    f"{possessive_pronoun(owner_label(seat))} next commander tax for "
+                    f"{card_name_from_grp(grp_id)} is +{tax}"
+                )
+
+        for (source_seat, target_seat), amount in sorted(commander_damage.items()):
+            if amount:
+                commander_names = [
+                    card_name_from_grp(grp_id)
+                    for grp_id in sorted(commander_grps_by_seat.get(source_seat, set()))
+                ]
+                source = " / ".join(name for name in commander_names if name) or "Commander"
+                lines.append(
+                    f"{source} has dealt {amount} commander damage to "
+                    f"{owner_label(target_seat)}"
+                )
+        return lines
 
     def emit_zone_transfer(ann):
+        """Emit cast/play/zone-change lines, including command-zone casts."""
         details = detail_dict(ann.get("details"))
         category = details.get("category")
         affected = ann.get("affectedIds") or []
@@ -479,6 +590,10 @@ def extract_game_plays(
             emit(phrase_player_action(owner, "play", name))
         elif category == "CastSpell":
             suffix = " from command zone" if from_command else ""
+            if from_command:
+                commander_text = note_commander_cast(iid, details.get("grpid"))
+                if commander_text:
+                    suffix = f"{suffix}; {commander_text}"
             emit(phrase_player_action(owner, "cast", f"{name}{suffix}"))
         elif category == "Resolve":
             if show_resolves:
@@ -511,6 +626,7 @@ def extract_game_plays(
             remove_active_effects_for_source(iid)
 
     def emit_life_change(ann, gsm):
+        """Emit life gain/loss lines from ModifiedLife annotations."""
         details = detail_dict(ann.get("details"))
         delta = details.get("life")
         affected = ann.get("affectedIds") or []
@@ -527,6 +643,7 @@ def extract_game_plays(
         emit(phrase_life_change(owner_label(seat), delta, total))
 
     def emit_choice_result(ann, gsm):
+        """Emit readable choice-result lines from Arena's numeric choice annotations."""
         details = detail_dict(ann.get("details"))
         domain = details.get("Choice_Domain")
         value = details.get("Choice_Value")
@@ -571,7 +688,26 @@ def extract_game_plays(
             add_active_effect(state_key, effect_text, source_id=source_id)
             emit(effect_text)
 
+    def note_commander_cast(instance_id, fallback_grp_id=None):
+        """Track command-zone casts as commander casts and report current tax."""
+        obj = objects.get(instance_id, {})
+        seat = obj.get("controllerSeatId") or obj.get("ownerSeatId") or object_owner(instance_id)
+        grp_id = obj.get("grpId") or obj.get("objectSourceGrpId") or fallback_grp_id
+        if seat is None or grp_id is None:
+            return None
+        try:
+            grp_id = int(grp_id)
+        except (TypeError, ValueError):
+            return None
+
+        commander_grps_by_seat.setdefault(seat, set()).add(grp_id)
+        commander_instance_ids.add(instance_id)
+        commander_cast_counts[(seat, grp_id)] += 1
+        count = commander_cast_counts[(seat, grp_id)]
+        return phrase_commander_cast_note(count)
+
     def emit_combat_events(gsm):
+        """Emit attack/block declarations from combat-state object fields."""
         if gsm.get("turnInfo", {}).get("phase") != "Phase_Combat":
             return
 
@@ -602,6 +738,7 @@ def extract_game_plays(
                         emit(f"{card_label(iid)} blocks {card_label(attacker_id)}")
 
     def emit_continuous_effect_events(gsm):
+        """Emit major state-changing continuous effects Arena exposes directly."""
         annotations = gsm.get("annotations") or []
         if not annotations:
             return
@@ -686,7 +823,70 @@ def extract_game_plays(
             remove_active_effects_with_prefix(("teferi_protection", seat))
             remove_active_effects_with_prefix(("teferi_life_total", seat))
 
+    def emit_commander_damage(ann, gsm):
+        """Track combat damage from commanders to players when Arena exposes it."""
+        details = detail_dict(ann.get("details"))
+        damage = details.get("damage")
+        affected = ann.get("affectedIds") or []
+        source_id = ann.get("affectorId")
+        if (
+            not isinstance(damage, int)
+            or damage <= 0
+            or not affected
+            or affected[0] not in (1, 2)
+        ):
+            return
+        if gsm.get("turnInfo", {}).get("phase") != "Phase_Combat":
+            return
+
+        source = objects.get(source_id, {})
+        source_seat = source.get("controllerSeatId") or source.get("ownerSeatId")
+        source_grp = source.get("grpId") or source.get("objectSourceGrpId")
+        try:
+            source_grp = int(source_grp) if source_grp is not None else None
+        except (TypeError, ValueError):
+            source_grp = None
+        is_commander = (
+            source_id in commander_instance_ids
+            or source_grp in commander_grps_by_seat.get(source_seat, set())
+        )
+        if not is_commander or source_seat is None:
+            return
+
+        target_seat = affected[0]
+        key = (current_match, gsm.get("gameStateId"), ann.get("id"), source_id, target_seat)
+        if key in seen_commander_damage:
+            return
+        seen_commander_damage.add(key)
+        commander_damage[(source_seat, target_seat)] += damage
+        total = commander_damage[(source_seat, target_seat)]
+        emit(phrase_commander_damage(card_label(source_id), damage, owner_label(target_seat), total))
+
+    def emit_player_counter_change(ann, gsm):
+        """Track player counters if future Arena logs expose known counter types."""
+        details = detail_dict(ann.get("details"))
+        affected = ann.get("affectedIds") or []
+        if not affected or affected[0] not in (1, 2):
+            return
+
+        raw_type = details.get("counter_type")
+        counter_name = player_counter_names.get(raw_type)
+        if not counter_name:
+            return
+
+        amount = details.get("transaction_amount")
+        if not isinstance(amount, int):
+            return
+        if "AnnotationType_CounterRemoved" in set(ann.get("type") or []):
+            amount = -amount
+
+        seat = affected[0]
+        player_counters[(seat, counter_name)] += amount
+        total = player_counters[(seat, counter_name)]
+        emit(phrase_player_counter_change(owner_label(seat), counter_name, amount, total))
+
     def update_state(gsm):
+        """Merge a full/diff game-state message into the local state model."""
         for team in gsm.get("teams", []):
             team_id = team.get("id")
             if team_id is not None:
@@ -724,6 +924,7 @@ def extract_game_plays(
             objects.pop(deleted_id, None)
 
     def emit_match_results(gsm):
+        """Emit game/match result lines once per unique Arena result record."""
         for result in gsm.get("gameInfo", {}).get("results") or []:
             scope = result.get("scope")
             winning_team_id = result.get("winningTeamId")
@@ -746,6 +947,7 @@ def extract_game_plays(
                 emit(f"Winner: {winner} ({scope_text}, {reason_text})")
 
     def record_debug(ann):
+        """Record annotation counts and one sample payload for debug output."""
         details = detail_dict(ann.get("details"))
         category = details.get("category") or details.get("type") or ""
         key = (tuple(ann.get("type") or []), category)
@@ -760,10 +962,12 @@ def extract_game_plays(
             }
 
     def compact_json(value):
+        """Render a short one-line JSON sample for debug summaries."""
         text = json.dumps(value, sort_keys=True, separators=(",", ":"))
         return text if len(text) <= 220 else text[:217] + "..."
 
     def contains_choice_marker(value, path=()):
+        """Detect likely choice payloads without treating card type lines as choices."""
         needles = (
             "choice",
             "selected",
@@ -799,6 +1003,7 @@ def extract_game_plays(
         return False
 
     def object_debug_grp_id(obj):
+        """Return a requested debug grpId if this object matches one."""
         for key in ("grpId", "objectSourceGrpId"):
             grp_id = obj.get(key)
             if grp_id is None:
@@ -923,7 +1128,13 @@ def extract_game_plays(
                     players.clear()
                     team_to_seats.clear()
                     seen_combat.clear()
+                    seen_commander_damage.clear()
                     active_effects.clear()
+                    commander_grps_by_seat.clear()
+                    commander_instance_ids.clear()
+                    commander_cast_counts.clear()
+                    commander_damage.clear()
+                    player_counters.clear()
                     emit(f"===== GAME {current_match_number}: MATCH {current_match} =====")
 
                 game_state_id = gsm.get("gameStateId")
@@ -972,6 +1183,13 @@ def extract_game_plays(
                         emit_life_change(ann, gsm)
                     elif "AnnotationType_ChoiceResult" in ann_types:
                         emit_choice_result(ann, gsm)
+                    elif "AnnotationType_DamageDealt" in ann_types:
+                        emit_commander_damage(ann, gsm)
+                    elif (
+                        "AnnotationType_CounterAdded" in ann_types
+                        or "AnnotationType_CounterRemoved" in ann_types
+                    ):
+                        emit_player_counter_change(ann, gsm)
 
     if show_progress:
         render_progress(force=True)
