@@ -92,6 +92,7 @@ def extract_game_plays(
     seen_life_changes = set()
     seen_mulligans = set()
     seen_results = set()
+    seen_choices = set()
     current_match = None
     current_turn = None
     last_game_state_id = None
@@ -128,6 +129,39 @@ def extract_game_plays(
         "SBA_ZeroLoyalty": "dies",
         "SBA_ZeroToughness": "dies",
         "SBA_UnattachedAura": "dies",
+    }
+    choice_domain_names = {
+        4: "card type",
+        5: "creature type",
+        6: "color",
+    }
+    choice_value_names = {
+        # Observed in current GRE logs:
+        # Serra's Emissary: domain 4, value 2 -> Creature.
+        # Patchwork Banner / Vanquisher's Banner / Cavern of Souls:
+        # domain 5, value 1 -> Angel.
+        # Nyx Lotus / Nykthos: domain 6, value 1 -> White.
+        4: {
+            1: "Artifact",
+            2: "Creature",
+            3: "Enchantment",
+            4: "Instant",
+            5: "Land",
+            6: "Planeswalker",
+            7: "Sorcery",
+            8: "Battle",
+        },
+        5: {
+            1: "Angel",
+        },
+        6: {
+            1: "White",
+            2: "Blue",
+            3: "Black",
+            4: "Red",
+            5: "Green",
+            6: "Colorless",
+        },
     }
 
     def emit(line=""):
@@ -370,6 +404,35 @@ def extract_game_plays(
         total = players.get(seat, {}).get("lifeTotal")
         suffix = f" ({total})" if total is not None else ""
         emit(f"{owner_label(seat)} {verb} {amount} life{suffix}")
+
+    def emit_choice_result(ann, gsm):
+        details = detail_dict(ann.get("details"))
+        domain = details.get("Choice_Domain")
+        value = details.get("Choice_Value")
+        if not isinstance(domain, int) or not isinstance(value, int):
+            return
+
+        source_id = ann.get("affectorId")
+        source = card_label(source_id)
+        seat = object_owner(source_id)
+        affected = ann.get("affectedIds") or []
+        chooser = owner_label(seat or (affected[0] if affected else None))
+        domain_text = choice_domain_names.get(domain, f"choice domain {domain}")
+        value_text = choice_value_names.get(domain, {}).get(value, f"value {value}")
+
+        key = (
+            current_match,
+            gsm.get("gameStateId"),
+            ann.get("id"),
+            source_id,
+            domain,
+            value,
+        )
+        if key in seen_choices:
+            return
+        seen_choices.add(key)
+
+        emit(f"{chooser} chooses {value_text} for {source} ({domain_text})")
 
     def emit_combat_events(gsm):
         if gsm.get("turnInfo", {}).get("phase") != "Phase_Combat":
@@ -670,6 +733,8 @@ def extract_game_plays(
                         emit_zone_transfer(ann)
                     elif "AnnotationType_ModifiedLife" in ann_types:
                         emit_life_change(ann, gsm)
+                    elif "AnnotationType_ChoiceResult" in ann_types:
+                        emit_choice_result(ann, gsm)
 
     if show_progress:
         render_progress(force=True)

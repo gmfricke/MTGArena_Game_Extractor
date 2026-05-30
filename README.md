@@ -20,6 +20,8 @@ Opponent casts Arcane Signet
 
 It can also print board state, hands, graveyards, exile, commanders, attacks, blocks, life changes, mulligans, and match results when those details are available in the log.
 
+It also tries to capture player choices when Arena records them in the structured game events. For example, it can show Serra's Emissary choosing Creature, or Patchwork Banner, Vanquisher's Banner, and Cavern of Souls choosing Angel.
+
 ## Why This Is Interesting
 
 Arena games go by quickly, and the client does not give me a simple text transcript after the game. A plain text transcript is useful because I can:
