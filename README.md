@@ -40,7 +40,25 @@ The script is also useful if you are curious about how MTG Arena represents game
 
 ## Basic Usage
 
-Set paths for your Arena log and card database:
+You need Python 3. This program only uses Python's standard library, so there are no extra Python packages to install.
+
+On macOS, Python may already be installed. Check with:
+
+```bash
+python3 --version
+```
+
+If that command is not found, install Python from:
+
+```text
+https://www.python.org/downloads/
+```
+
+There is no `pip install` step for this project.
+
+The examples below are for macOS because that is where I am using Arena. The code should work on Windows too, but the `Player.log` and card database paths will be different.
+
+Set paths for your Arena log and card database on macOS:
 
 ```bash
 LOG="$HOME/Library/Logs/Wizards Of The Coast/MTGA/Player.log"
@@ -65,6 +83,66 @@ Show only one game by number:
 python3 mtga_extract_plays.py "$LOG" "$CARDDB" --select 3 --no-resolves
 ```
 
+Show the built-in help page:
+
+```bash
+python3 mtga_extract_plays.py --help
+```
+
+## Finding The Card Database
+
+The Arena card database filename changes when Arena updates. If the example command fails because the database path does not exist, look in:
+
+```text
+~/Library/Application Support/com.wizards.mtga/Downloads/Raw/
+```
+
+and use the current `Raw_CardDatabase_*.mtga` file.
+
+On Windows, look for the Arena `Player.log` file and the `Downloads/Raw` folder under your MTG Arena install or user data folders. The exact location can change depending on how Arena was installed, but the important files are still:
+
+```text
+Player.log
+Raw_CardDatabase_*.mtga
+```
+
+Put those full paths into the command in place of `$LOG` and `$CARDDB`.
+
+## Common Options
+
+Use this for a short transcript of the most recent game:
+
+```bash
+python3 mtga_extract_plays.py "$LOG" "$CARDDB" --last 1 --no-resolves --no-turn-state
+```
+
+Use this for a fuller transcript with board state at the start of each turn:
+
+```bash
+python3 mtga_extract_plays.py "$LOG" "$CARDDB" --last 1 --no-resolves
+```
+
+Use this for the last three games:
+
+```bash
+python3 mtga_extract_plays.py "$LOG" "$CARDDB" --last 3 --no-resolves
+```
+
+Use this to save output to a text file:
+
+```bash
+python3 mtga_extract_plays.py "$LOG" "$CARDDB" --last 3 --no-resolves > mtga_transcript.txt
+```
+
+The most useful options are:
+
+- `--last 1`: show the most recent game
+- `--last 3`: show the last three games
+- `--select 4`: show only game 4 from the log
+- `--no-resolves`: hide routine "resolves" lines
+- `--no-turn-state`: hide board and hand snapshots
+- `--no-progress`: hide the progress bar
+
 ## Debugging Choices
 
 Arena records most gameplay as IDs and structured game state changes. Card names should come from the SQLite card database, not from the raw log.
@@ -88,16 +166,6 @@ python3 mtga_extract_plays.py "$LOG" "$CARDDB" --last 1 --debug-choices
 ```
 
 This is meant to help find where Arena records choices like creature type, protection type, modal choices, or similar decisions.
-
-## Notes
-
-The Arena card database filename changes when Arena updates. If the command fails because the database path does not exist, look in:
-
-```text
-~/Library/Application Support/com.wizards.mtga/Downloads/Raw/
-```
-
-and use the current `Raw_CardDatabase_*.mtga` file.
 
 ## License
 

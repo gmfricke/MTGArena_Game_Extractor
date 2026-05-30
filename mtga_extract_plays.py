@@ -1297,14 +1297,46 @@ def extract_game_plays(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Extract a readable MTG Arena transcript from Player.log."
+        description=(
+            "Extract readable MTG Arena game transcripts from Player.log. "
+            "The card database argument should point to Arena's local "
+            "Raw_CardDatabase_*.mtga SQLite file."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""examples:
+  Print the most recent game:
+    python3 mtga_extract_plays.py "$LOG" "$CARDDB" --last 1 --no-resolves
+
+  Save the last three games to a text file:
+    python3 mtga_extract_plays.py "$LOG" "$CARDDB" --last 3 --no-resolves > mtga_transcript.txt
+
+  Print only game 4 from the log:
+    python3 mtga_extract_plays.py "$LOG" "$CARDDB" --select 4 --no-resolves
+
+  Debug where Arena records a card's choices:
+    python3 mtga_extract_plays.py "$LOG" "$CARDDB" --last 1 --debug-card "Serra's Emissary"
+
+macOS path examples:
+  LOG="$HOME/Library/Logs/Wizards Of The Coast/MTGA/Player.log"
+  CARDDB="$HOME/Library/Application Support/com.wizards.mtga/Downloads/Raw/Raw_CardDatabase_....mtga"
+
+No pip install step is required; this script only uses Python's standard library.
+""",
     )
-    parser.add_argument("player_log", type=Path)
-    parser.add_argument("carddb", type=Path)
+    parser.add_argument(
+        "player_log",
+        type=Path,
+        help="path to MTG Arena's Player.log file",
+    )
+    parser.add_argument(
+        "carddb",
+        type=Path,
+        help="path to Raw_CardDatabase_*.mtga from Arena's Downloads/Raw folder",
+    )
     parser.add_argument(
         "--debug-annotations",
         action="store_true",
-        help="print annotation type/category counts and example payloads to stderr",
+        help="advanced: print annotation type/category counts and example payloads to stderr",
     )
     parser.add_argument(
         "--debug-grpid",
@@ -1312,32 +1344,32 @@ def main() -> None:
         action="append",
         default=[],
         metavar="N",
-        help="dump raw gameplay event windows around objects with this GrpId",
+        help="advanced: dump raw gameplay event windows around objects with this GrpId",
     )
     parser.add_argument(
         "--debug-card",
         action="append",
         default=[],
         metavar="NAME",
-        help="look up a card name in the SQLite card DB and debug its GrpId(s)",
+        help="advanced: look up a card name in the SQLite card DB and debug its GrpId(s)",
     )
     parser.add_argument(
         "--debug-choices",
         action="store_true",
-        help="print GRE/gameState events containing likely choice or selection fields",
+        help="advanced: print game events containing likely choice or selection fields",
     )
     selection_group = parser.add_mutually_exclusive_group()
     selection_group.add_argument(
         "--select",
         type=int,
         metavar="N",
-        help="output only game N from the log, using 1-based log order",
+        help="output only game N from the log, counting from the start of the file",
     )
     selection_group.add_argument(
         "--last",
         type=int,
         metavar="N",
-        help="output only the last N games from the log",
+        help="output only the last N games; use --last 1 for the most recent game",
     )
     progress_group = parser.add_mutually_exclusive_group()
     progress_group.add_argument(
@@ -1353,12 +1385,12 @@ def main() -> None:
     parser.add_argument(
         "--no-resolves",
         action="store_true",
-        help="suppress 'resolves' transcript lines",
+        help="hide 'resolves' transcript lines for shorter output",
     )
     parser.add_argument(
         "--no-turn-state",
         action="store_true",
-        help="suppress board and hand snapshots at turn starts",
+        help="hide board, hand, graveyard, exile, and commander snapshots at turn starts",
     )
     args = parser.parse_args()
 
