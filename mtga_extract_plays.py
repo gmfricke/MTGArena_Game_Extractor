@@ -69,6 +69,79 @@ def find_grp_ids_by_card_name(carddb_path: Path, card_name: str) -> dict[int, st
     return {grp_id: name for grp_id, name in by_grp.items() if needle in name.casefold()}
 
 
+def subject_pronoun(label: str) -> str:
+    return "I" if label == "Me" else label
+
+
+def object_pronoun(label: str) -> str:
+    return "me" if label == "Me" else label
+
+
+def possessive_pronoun(label: str) -> str:
+    if label == "Me":
+        return "My"
+    if label:
+        return f"{label}'s"
+    return ""
+
+
+def present_tense_verb(label: str, base: str, third_person: str | None = None) -> str:
+    if label == "Me":
+        return base
+    return third_person or f"{base}s"
+
+
+def phrase_player_action(label: str, base_verb: str, rest: str, third_person=None) -> str:
+    return (
+        f"{subject_pronoun(label)} "
+        f"{present_tense_verb(label, base_verb, third_person)} {rest}"
+    )
+
+
+def phrase_life_change(label: str, delta: int, total=None) -> str:
+    verb = "gain" if delta > 0 else "lose"
+    amount = abs(delta)
+    suffix = f" ({total})" if total is not None else ""
+    return phrase_player_action(label, verb, f"{amount} life{suffix}")
+
+
+def phrase_death(controller_label: str | None, card_name: str) -> str:
+    possessive = possessive_pronoun(controller_label or "")
+    if not possessive:
+        return f"{card_name} dies"
+    return f"{possessive} {card_name} dies"
+
+
+def phrase_zone_change(source: str | None, verb: str, target: str) -> str:
+    passive = {
+        "destroy": "destroyed",
+        "exile": "exiled",
+        "counter": "countered",
+    }
+    if source:
+        return f"{source} {present_tense_verb('Opponent', verb)} {target}"
+    return f"{target} is {passive.get(verb, verb)}"
+
+
+def phrase_concede_result(winner: str, scope_text: str) -> list[str]:
+    loser = "Opponent" if winner == "Me" else "Me" if winner == "Opponent" else None
+    if loser == "Me":
+        concession = "I concede" if scope_text == "game" else "Match result: I conceded"
+    elif loser == "Opponent":
+        concession = (
+            "Opponent concedes"
+            if scope_text == "game"
+            else "Match result: Opponent conceded"
+        )
+    else:
+        concession = (
+            "Opponent concedes"
+            if scope_text == "game"
+            else "Match result: opponent conceded"
+        )
+    return [concession, f"Winner: {winner}"]
+
+
 def extract_game_plays(
     player_log: Path,
     grp_to_name: dict[int, str],
@@ -119,18 +192,12 @@ def extract_game_plays(
     read_bytes = 0
     last_progress_at = 0.0
 
-    terminal_categories = {
-        "Countered": "countered",
-        "Destroy": "destroys",
-        "DestroyNoRegenerate": "destroys",
-        "Discard": "discards",
-        "Exile": "exiles",
-        "Sacrifice": "sacrifices",
-        "SBA_Damage": "dies",
-        "SBA_Deathtouch": "dies",
-        "SBA_ZeroLoyalty": "dies",
-        "SBA_ZeroToughness": "dies",
-        "SBA_UnattachedAura": "dies",
+    death_categories = {
+        "SBA_Damage",
+        "SBA_Deathtouch",
+        "SBA_ZeroLoyalty",
+        "SBA_ZeroToughness",
+        "SBA_UnattachedAura",
     }
     choice_domain_names = {
         4: "card type",
@@ -285,8 +352,16 @@ def extract_game_plays(
 
     def target_label(target_id):
         if target_id in (1, 2):
-            return owner_label(target_id)
+            return object_pronoun(owner_label(target_id))
         return card_label(target_id)
+
+    def source_label(instance_id):
+        if instance_id is None:
+            return None
+        label = card_label(instance_id)
+        if label == f"instance {instance_id}" or label.startswith("grpId "):
+            return None
+        return label
 
     def event_owner(ann, details):
         src_owner = zone_owner(details.get("zone_src"))
@@ -401,15 +476,38 @@ def extract_game_plays(
         from_command = is_command_zone(details.get("zone_src"))
 
         if category == "PlayLand":
-            emit(f"{owner} plays {name}")
+            emit(phrase_player_action(owner, "play", name))
         elif category == "CastSpell":
             suffix = " from command zone" if from_command else ""
-            emit(f"{owner} casts {name}{suffix}")
+            emit(phrase_player_action(owner, "cast", f"{name}{suffix}"))
         elif category == "Resolve":
             if show_resolves:
                 emit(f"{name} resolves")
-        elif category in terminal_categories:
-            emit(f"{owner} {terminal_categories[category]} {name}")
+        elif category in death_categories:
+            controller = object_owner(iid)
+            emit(phrase_death(owner_label(controller) if controller else None, name))
+            remove_active_effects_for_source(iid)
+        elif category in {"Destroy", "DestroyNoRegenerate"}:
+            source = source_label(ann.get("affectorId"))
+            if source and ann.get("affectorId") != iid and source != name:
+                emit(phrase_zone_change(source, "destroy", name))
+            else:
+                emit(phrase_zone_change(None, "destroy", name))
+            remove_active_effects_for_source(iid)
+        elif category == "Exile":
+            source = source_label(ann.get("affectorId"))
+            if source and ann.get("affectorId") != iid and source != name:
+                emit(phrase_zone_change(source, "exile", name))
+            else:
+                emit(phrase_zone_change(None, "exile", name))
+            remove_active_effects_for_source(iid)
+        elif category == "Countered":
+            emit(phrase_zone_change(None, "counter", name))
+            remove_active_effects_for_source(iid)
+        elif category == "Discard":
+            emit(phrase_player_action(owner, "discard", name))
+        elif category == "Sacrifice":
+            emit(phrase_player_action(owner, "sacrifice", name))
             remove_active_effects_for_source(iid)
 
     def emit_life_change(ann, gsm):
@@ -425,11 +523,8 @@ def extract_game_plays(
             return
         seen_life_changes.add(key)
 
-        verb = "gains" if delta > 0 else "loses"
-        amount = abs(delta)
         total = players.get(seat, {}).get("lifeTotal")
-        suffix = f" ({total})" if total is not None else ""
-        emit(f"{owner_label(seat)} {verb} {amount} life{suffix}")
+        emit(phrase_life_change(owner_label(seat), delta, total))
 
     def emit_choice_result(ann, gsm):
         details = detail_dict(ann.get("details"))
@@ -458,9 +553,20 @@ def extract_game_plays(
             return
         seen_choices.add(key)
 
-        emit(f"{chooser} chooses {value_text} for {source} ({domain_text})")
+        emit(
+            phrase_player_action(
+                chooser,
+                "choose",
+                f"{value_text} for {source} ({domain_text})",
+                third_person="chooses",
+            )
+        )
         if source == "Serra's Emissary" and domain == 4:
-            effect_text = f"{chooser} has protection from {value_text.lower()}s via {source}"
+            effect_text = (
+                f"{subject_pronoun(chooser)} "
+                f"{present_tense_verb(chooser, 'have', 'has')} "
+                f"protection from {value_text.lower()}s via {source}"
+            )
             state_key = ("serra_protection", source_id)
             add_active_effect(state_key, effect_text, source_id=source_id)
             emit(effect_text)
@@ -480,8 +586,11 @@ def extract_game_plays(
                 if key not in seen_combat:
                     seen_combat.add(key)
                     emit(
-                        f"{owner_label(obj.get('controllerSeatId'))} attacks "
-                        f"{target_label(target_id)} with {card_label(iid)}"
+                        phrase_player_action(
+                            owner_label(obj.get("controllerSeatId")),
+                            "attack",
+                            f"{target_label(target_id)} with {card_label(iid)}",
+                        )
                     )
 
             if obj.get("blockState") in {"BlockState_Declared", "BlockState_Blocking"}:
@@ -521,13 +630,23 @@ def extract_game_plays(
                 if key not in seen_state_events:
                     seen_state_events.add(key)
                     plural = "permanent" if count == 1 else "permanents"
-                    emit(f"{label} phases out {count} {plural} via {source}")
+                    emit(
+                        phrase_player_action(
+                            label,
+                            "phase",
+                            f"out {count} {plural} via {source}",
+                            third_person="phases",
+                        )
+                    )
 
                 protection_text = (
-                    f"{label} has protection from everything until next turn via {source}"
+                    f"{subject_pronoun(label)} "
+                    f"{present_tense_verb(label, 'have', 'has')} "
+                    f"protection from everything until next turn via {source}"
                 )
                 life_text = (
-                    f"{label}'s life total can't change until next turn via {source}"
+                    f"{possessive_pronoun(label)} life total can't change "
+                    f"until next turn via {source}"
                 )
                 add_active_effect(
                     ("teferi_protection", seat),
@@ -563,7 +682,7 @@ def extract_game_plays(
                 continue
             seen_state_events.add(key)
             plural = "permanent" if count == 1 else "permanents"
-            emit(f"{label}'s {count} phased-out {plural} phase in")
+            emit(f"{possessive_pronoun(label)} {count} phased-out {plural} phase in")
             remove_active_effects_with_prefix(("teferi_protection", seat))
             remove_active_effects_with_prefix(("teferi_life_total", seat))
 
@@ -593,7 +712,13 @@ def extract_game_plays(
                 key = (current_match, seat, mulligans)
                 if key not in seen_mulligans:
                     seen_mulligans.add(key)
-                    emit(f"{owner_label(seat)} mulligans to {7 - int(mulligans)}")
+                    emit(
+                        phrase_player_action(
+                            owner_label(seat),
+                            "mulligan",
+                            f"to {7 - int(mulligans)}",
+                        )
+                    )
 
         for deleted_id in gsm.get("diffDeletedInstanceIds") or []:
             objects.pop(deleted_id, None)
@@ -615,9 +740,10 @@ def extract_game_plays(
             reason_text = reason_text.replace("ResultType_", "").lower()
             emit("")
             if reason_text == "concede":
-                emit(f"Winner ({scope_text}): {winner} (opponent conceded)")
+                for line in phrase_concede_result(winner, scope_text):
+                    emit(line)
             else:
-                emit(f"Winner ({scope_text}): {winner} ({reason_text})")
+                emit(f"Winner: {winner} ({scope_text}, {reason_text})")
 
     def record_debug(ann):
         details = detail_dict(ann.get("details"))

@@ -10,8 +10,8 @@ The result is a transcript that looks more like:
 
 ```text
 === Turn 3: Me ===
-Me plays Snow-Covered Plains
-Me casts Giada, Font of Hope from command zone
+I play Snow-Covered Plains
+I cast Giada, Font of Hope from command zone
 
 === Turn 4: Opponent ===
 Opponent plays Island
