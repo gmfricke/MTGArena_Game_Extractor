@@ -26,7 +26,7 @@ The parser is starting to track important continuous effects too. It can show ac
 
 It also tracks commander recasts, the next commander tax, and commander combat damage when those events are visible in Arena's game log. Player counters such as poison, energy, and experience are wired into the state model, but the parser only reports them when Arena exposes an unambiguous player counter event.
 
-## Why This Is Interesting
+## Why?
 
 Arena games go by quickly, and the client does not give me a simple text transcript after the game. A plain text transcript is useful because I can:
 
@@ -35,6 +35,8 @@ Arena games go by quickly, and the client does not give me a simple text transcr
 - compare what I thought happened with what actually happened
 - feed the transcript into other tools
 - debug weird board states or decisions
+
+I looked briefly at alternatives but non did what I wanted and I sometimes had to pay quite a bit of money to find that out. 
 
 The script is also useful if you are curious about how MTG Arena represents games internally. There are debug modes for inspecting annotations, raw game events, card objects, and player choice records.
 
