@@ -38,6 +38,12 @@ Arena games go by quickly, and the client does not give me a simple text transcr
 
 The script is also useful if you are curious about how MTG Arena represents games internally. There are debug modes for inspecting annotations, raw game events, card objects, and player choice records.
 
+## Known Gaps
+
+I learn what events show up in the log from my own games. I do not play every card, and I do not see every combination of cards, so there will be gaps in what this tool understands.
+
+That is part of the fun of it. It gives me a little extra motivation to play more games and see more weird board states.
+
 ## Basic Usage
 
 You need Python 3. This program only uses Python's standard library, so there are no extra Python packages to install.
