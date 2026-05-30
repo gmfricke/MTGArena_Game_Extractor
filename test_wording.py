@@ -7,6 +7,7 @@ from mtga_extract_plays import (
     phrase_concede_result,
     phrase_death,
     phrase_life_change,
+    phrase_player_has_counter,
     phrase_player_counter_change,
     phrase_player_action,
     phrase_zone_change,
@@ -104,6 +105,10 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(
             phrase_player_counter_change("Me", "experience", -1, 0),
             "I lose 1 experience counter (0 total)",
+        )
+        self.assertEqual(
+            phrase_player_has_counter("Me", "poison", 6),
+            "I have 6 poison counters",
         )
 
 
