@@ -646,7 +646,9 @@ def extract_game_plays(
                     f"opponent source to {object_pronoun(owner)}"
                 )
                 add_active_effect(("valkmira", iid), effect_text, source_id=iid)
-            if show_resolves:
+            if show_resolves and name != f"instance {iid}":
+                # Anonymous stack objects are usually triggered/copy ability
+                # bookkeeping. Emitting raw ids is less useful than silence.
                 emit(f"{name} resolves")
         elif category in death_categories:
             controller = object_owner(iid)
