@@ -74,25 +74,25 @@ CARDDB="$HOME/Library/Application Support/com.wizards.mtga/Downloads/Raw/Raw_Car
 Then run:
 
 ```bash
-python3 mtga_extract_plays.py "$LOG" "$CARDDB" --last 1 --no-resolves
+python3 mtga_extract_games.py "$LOG" "$CARDDB" --last 1 --no-resolves
 ```
 
 Save the last two games to a file:
 
 ```bash
-python3 mtga_extract_plays.py "$LOG" "$CARDDB" --last 2 --no-resolves > mtga_transcript.txt
+python3 mtga_extract_games.py "$LOG" "$CARDDB" --last 2 --no-resolves > mtga_transcript.txt
 ```
 
 Show only one game by number:
 
 ```bash
-python3 mtga_extract_plays.py "$LOG" "$CARDDB" --select 3 --no-resolves
+python3 mtga_extract_games.py "$LOG" "$CARDDB" --select 3 --no-resolves
 ```
 
 Show the built-in help page:
 
 ```bash
-python3 mtga_extract_plays.py --help
+python3 mtga_extract_games.py --help
 ```
 
 ## Finding The Card Database
@@ -119,25 +119,25 @@ Put those full paths into the command in place of `$LOG` and `$CARDDB`.
 Use this for a short transcript of the most recent game:
 
 ```bash
-python3 mtga_extract_plays.py "$LOG" "$CARDDB" --last 1 --no-resolves --no-turn-state
+python3 mtga_extract_games.py "$LOG" "$CARDDB" --last 1 --no-resolves --no-turn-state
 ```
 
 Use this for a fuller transcript with board state at the start of each turn:
 
 ```bash
-python3 mtga_extract_plays.py "$LOG" "$CARDDB" --last 1 --no-resolves
+python3 mtga_extract_games.py "$LOG" "$CARDDB" --last 1 --no-resolves
 ```
 
 Use this for the last three games:
 
 ```bash
-python3 mtga_extract_plays.py "$LOG" "$CARDDB" --last 3 --no-resolves
+python3 mtga_extract_games.py "$LOG" "$CARDDB" --last 3 --no-resolves
 ```
 
 Use this to save output to a text file:
 
 ```bash
-python3 mtga_extract_plays.py "$LOG" "$CARDDB" --last 3 --no-resolves > mtga_transcript.txt
+python3 mtga_extract_games.py "$LOG" "$CARDDB" --last 3 --no-resolves > mtga_transcript.txt
 ```
 
 The most useful options are:
@@ -156,19 +156,19 @@ Arena records most gameplay as IDs and structured game state changes. Card names
 To inspect a card by name:
 
 ```bash
-python3 mtga_extract_plays.py "$LOG" "$CARDDB" --last 1 --debug-card "Serra's Emissary"
+python3 mtga_extract_games.py "$LOG" "$CARDDB" --last 1 --debug-card "Serra's Emissary"
 ```
 
 To inspect a card by `grpId`:
 
 ```bash
-python3 mtga_extract_plays.py "$LOG" "$CARDDB" --last 1 --debug-grpid 75982
+python3 mtga_extract_games.py "$LOG" "$CARDDB" --last 1 --debug-grpid 75982
 ```
 
 To look for events that may contain choices or selections:
 
 ```bash
-python3 mtga_extract_plays.py "$LOG" "$CARDDB" --last 1 --debug-choices
+python3 mtga_extract_games.py "$LOG" "$CARDDB" --last 1 --debug-choices
 ```
 
 This is meant to help find where Arena records choices like creature type, protection type, modal choices, or similar decisions.

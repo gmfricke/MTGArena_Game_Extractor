@@ -185,6 +185,42 @@ def phrase_player_has_counter(label: str, counter_name: str, amount: int) -> str
     )
 
 
+def should_emit_resolve_line(name: str, instance_id: int) -> bool:
+    """Return false for anonymous stack resolves that would leak raw ids."""
+    return name != f"instance {instance_id}"
+
+
+def resolve_stack_name(instance_id: int, fallback_name: str, stack_names: dict[int, str]) -> str:
+    """Use the original cast name when Arena renames adventure/copy objects."""
+    return stack_names.get(instance_id) or fallback_name
+
+
+def copied_object_label(base_name: str | None, is_copy: bool) -> str | None:
+    """Make copied spells explicit so they are not confused with originals."""
+    if base_name and is_copy:
+        return f"A copy of {base_name}"
+    return base_name
+
+
+def death_label_or_none(name: str, instance_id: int) -> str | None:
+    """Suppress unidentified death events instead of printing raw instance ids."""
+    if name == f"instance {instance_id}":
+        return None
+    return name
+
+
+def active_effect_for_resolved_permanent(name: str, owner: str) -> str | None:
+    """Return concise active-effect text for high-impact resolved permanents."""
+    if name == "Valkmira, Protector's Shield":
+        return (
+            "Valkmira, Protector's Shield prevents 1 damage from each "
+            f"opponent source to {object_pronoun(owner)}"
+        )
+    if name == "Leyline of the Void":
+        return "Leyline of the Void exiles opponents' cards that would go to graveyard"
+    return None
+
+
 def extract_game_plays(
     player_log: Path,
     grp_to_name: dict[int, str],
@@ -213,6 +249,7 @@ def extract_game_plays(
     seen_commander_damage = set()
     seen_no_combat_damage = set()
     remembered_object_labels = {}
+    stack_display_names = {}
     active_effects = {}
     commander_grps_by_seat = {}
     commander_instance_ids = set()
@@ -436,6 +473,18 @@ def extract_game_plays(
             or token_label_from_object(obj)
         )
 
+    def note_object_id_change(ann):
+        """Carry labels across Arena ObjectIdChanged annotations."""
+        details = detail_dict(ann.get("details"))
+        orig_id = details.get("orig_id")
+        new_id = details.get("new_id")
+        if orig_id is None or new_id is None:
+            return
+        if orig_id in remembered_object_labels:
+            remembered_object_labels[new_id] = remembered_object_labels[orig_id]
+        if orig_id in stack_display_names:
+            stack_display_names[new_id] = stack_display_names[orig_id]
+
     def card_label(instance_id, fallback_grp_id=None):
         """Return a readable card label for an instance, falling back to grpId."""
         obj = objects.get(instance_id, {})
@@ -456,6 +505,10 @@ def extract_game_plays(
         """Return a source card name only when it is more useful than a raw id."""
         if instance_id is None:
             return None
+        obj = objects.get(instance_id, {})
+        if obj.get("isCopy"):
+            base = object_label_from_object(obj) or remembered_object_labels.get(instance_id)
+            return copied_object_label(base, True)
         label = card_label(instance_id)
         if label == f"instance {instance_id}" or label.startswith("grpId "):
             return None
@@ -633,6 +686,7 @@ def extract_game_plays(
         if category == "PlayLand":
             emit(phrase_player_action(owner, "play", name))
         elif category == "CastSpell":
+            stack_display_names[iid] = name
             suffix = " from command zone" if from_command else ""
             if from_command:
                 commander_text = note_commander_cast(iid, details.get("grpid"))
@@ -640,22 +694,27 @@ def extract_game_plays(
                     suffix = f"{suffix}; {commander_text}"
             emit(phrase_player_action(owner, "cast", f"{name}{suffix}"))
         elif category == "Resolve":
-            if name == "Valkmira, Protector's Shield":
-                effect_text = (
-                    "Valkmira, Protector's Shield prevents 1 damage from each "
-                    f"opponent source to {object_pronoun(owner)}"
-                )
-                add_active_effect(("valkmira", iid), effect_text, source_id=iid)
-            if show_resolves and name != f"instance {iid}":
+            name = resolve_stack_name(iid, name, stack_display_names)
+            effect_text = active_effect_for_resolved_permanent(name, owner)
+            if effect_text:
+                add_active_effect(("resolved_effect", iid, name), effect_text, source_id=iid)
+            if show_resolves and should_emit_resolve_line(name, iid):
                 # Anonymous stack objects are usually triggered/copy ability
                 # bookkeeping. Emitting raw ids is less useful than silence.
                 emit(f"{name} resolves")
+        elif category == "Copy":
+            # Jin-Gitaxias and similar effects put a copy on the stack. Track
+            # that identity so later effects do not look like the original
+            # countered spell still resolved.
+            copy_name = copied_object_label(name, True)
+            if copy_name:
+                stack_display_names[iid] = copy_name
+                remembered_object_labels[iid] = copy_name
         elif category in death_categories:
             controller = object_owner(iid)
-            if name == f"instance {iid}":
-                # Some dying token objects appear only as ids in the final
-                # zone-transfer annotation. Avoid leaking raw instance ids.
-                name = "A permanent"
+            name = death_label_or_none(name, iid)
+            if not name:
+                return
             emit(phrase_death(owner_label(controller) if controller else None, name))
             remove_active_effects_for_source(iid)
         elif category in {"Destroy", "DestroyNoRegenerate"}:
@@ -1240,6 +1299,7 @@ def extract_game_plays(
                     seen_commander_damage.clear()
                     seen_no_combat_damage.clear()
                     remembered_object_labels.clear()
+                    stack_display_names.clear()
                     active_effects.clear()
                     commander_grps_by_seat.clear()
                     commander_instance_ids.clear()
@@ -1288,7 +1348,9 @@ def extract_game_plays(
                     seen_annotations.add(key)
 
                     ann_types = set(ann.get("type") or [])
-                    if "AnnotationType_ZoneTransfer" in ann_types:
+                    if "AnnotationType_ObjectIdChanged" in ann_types:
+                        note_object_id_change(ann)
+                    elif "AnnotationType_ZoneTransfer" in ann_types:
                         emit_zone_transfer(ann)
                     elif "AnnotationType_ModifiedLife" in ann_types:
                         emit_life_change(ann, gsm)
@@ -1418,16 +1480,16 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""examples:
   Print the most recent game:
-    python3 mtga_extract_plays.py "$LOG" "$CARDDB" --last 1 --no-resolves
+    python3 mtga_extract_games.py "$LOG" "$CARDDB" --last 1 --no-resolves
 
   Save the last three games to a text file:
-    python3 mtga_extract_plays.py "$LOG" "$CARDDB" --last 3 --no-resolves > mtga_transcript.txt
+    python3 mtga_extract_games.py "$LOG" "$CARDDB" --last 3 --no-resolves > mtga_transcript.txt
 
   Print only game 4 from the log:
-    python3 mtga_extract_plays.py "$LOG" "$CARDDB" --select 4 --no-resolves
+    python3 mtga_extract_games.py "$LOG" "$CARDDB" --select 4 --no-resolves
 
   Debug where Arena records a card's choices:
-    python3 mtga_extract_plays.py "$LOG" "$CARDDB" --last 1 --debug-card "Serra's Emissary"
+    python3 mtga_extract_games.py "$LOG" "$CARDDB" --last 1 --debug-card "Serra's Emissary"
 
 macOS path examples:
   LOG="$HOME/Library/Logs/Wizards Of The Coast/MTGA/Player.log"
