@@ -92,3 +92,9 @@ The Arena card database filename changes when Arena updates. If the command fail
 ```
 
 and use the current `Raw_CardDatabase_*.mtga` file.
+
+## License
+
+This project is released under the MIT License.
+
+It is provided as-is, with no warranty. If you choose to use it, you are responsible for what you do with it. I am not liable for any damages or problems that come from using this software.
