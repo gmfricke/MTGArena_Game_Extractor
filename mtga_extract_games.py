@@ -202,6 +202,28 @@ def copied_object_label(base_name: str | None, is_copy: bool) -> str | None:
     return base_name
 
 
+def ability_object_label(source_name: str | None, is_trigger: bool = True) -> str | None:
+    """Name stack ability objects from their source card instead of their own grpId."""
+    if not source_name:
+        return None
+    kind = "trigger" if is_trigger else "ability"
+    return f"{source_name} {kind}"
+
+
+def phrase_mill_summary(source_name: str | None, label: str | None, count: int) -> str:
+    """Summarize grouped mill zone changes caused by one source."""
+    source = source_name or "A source"
+    source_phrase = (
+        f"{source} trigger resolves"
+        if count == 1
+        else f"{source} triggers resolve"
+    )
+    player = subject_pronoun(label) if label else "a player"
+    verb = present_tense_verb(label or "A player", "mill", "mills")
+    plural = "" if count == 1 else "s"
+    return f"{source_phrase}; {player} {verb} {count} card{plural}"
+
+
 def death_label_or_none(name: str, instance_id: int) -> str | None:
     """Suppress unidentified death events instead of printing raw instance ids."""
     if name == f"instance {instance_id}":
@@ -266,7 +288,10 @@ def extract_game_plays(
     seen_no_combat_damage = set()
     remembered_object_labels = {}
     stack_display_names = {}
+    ability_trigger_ids = set()
+    ability_source_names = {}
     pending_stack_casts = {}
+    pending_mill_group = None
     active_effects = {}
     commander_grps_by_seat = {}
     commander_instance_ids = set()
@@ -492,6 +517,19 @@ def extract_game_plays(
 
     def object_label_from_object(obj):
         """Return the best readable label available directly on a game object."""
+        if obj.get("type") == "GameObjectType_Ability":
+            source_name = ability_source_names.get(obj.get("instanceId"))
+            source_name = source_name or card_name_from_grp(obj.get("objectSourceGrpId"))
+            if not source_name and obj.get("parentId") is not None:
+                source_name = source_label(obj.get("parentId"))
+            if source_name:
+                # Ability objects have their own grpIds, and those ids can map
+                # to unrelated cards. Use the source card and the observed
+                # ability-instance annotation instead.
+                return ability_object_label(
+                    source_name,
+                    obj.get("instanceId") in ability_trigger_ids,
+                )
         return (
             card_name_from_grp(obj.get("grpId"))
             or card_name_from_grp(obj.get("objectSourceGrpId"))
@@ -531,6 +569,8 @@ def extract_game_plays(
         if instance_id is None:
             return None
         obj = objects.get(instance_id, {})
+        if obj.get("type") == "GameObjectType_Ability":
+            return object_label_from_object(obj) or remembered_object_labels.get(instance_id)
         if obj.get("isCopy"):
             base = object_label_from_object(obj) or remembered_object_labels.get(instance_id)
             return copied_object_label(base, True)
@@ -711,6 +751,48 @@ def extract_game_plays(
         if pending:
             emit(phrase_player_action(pending["owner"], "cast", pending["text"]))
 
+    def mill_source_from_affector(affector_id):
+        """Return the source card for a milling ability, when Arena exposes it."""
+        if affector_id in ability_source_names:
+            return ability_source_names[affector_id]
+        obj = objects.get(affector_id, {})
+        if obj.get("type") != "GameObjectType_Ability":
+            return None
+        source_name = card_name_from_grp(obj.get("objectSourceGrpId"))
+        if not source_name and obj.get("parentId") is not None:
+            source_name = source_label(obj.get("parentId"))
+        return source_name
+
+    def flush_pending_mill_group():
+        """Emit a compact line for consecutive mill events from one source."""
+        nonlocal pending_mill_group
+        if not pending_mill_group:
+            return
+        emit(
+            phrase_mill_summary(
+                pending_mill_group["source"],
+                pending_mill_group["owner"],
+                pending_mill_group["count"],
+            )
+        )
+        pending_mill_group = None
+
+    def add_pending_mill(source, owner, count=1):
+        """Group repeated mill zone transfers by source and milled player."""
+        nonlocal pending_mill_group
+        if not source:
+            return False
+        if (
+            pending_mill_group
+            and pending_mill_group["source"] == source
+            and pending_mill_group["owner"] == owner
+        ):
+            pending_mill_group["count"] += count
+        else:
+            flush_pending_mill_group()
+            pending_mill_group = {"source": source, "owner": owner, "count": count}
+        return True
+
     def emit_zone_transfer(ann, gsm):
         """Emit cast/play/zone-change lines, including command-zone casts."""
         details = detail_dict(ann.get("details"))
@@ -725,8 +807,10 @@ def extract_game_plays(
         from_command = is_command_zone(details.get("zone_src"))
 
         if category == "PlayLand":
+            flush_pending_mill_group()
             emit(phrase_player_action(owner, "play", name))
         elif category == "CastSpell":
+            flush_pending_mill_group()
             pending_stack_casts.pop(iid, None)
             stack_display_names[iid] = name
             suffix = " from command zone" if from_command else ""
@@ -740,6 +824,7 @@ def extract_game_plays(
             else:
                 emit(phrase_player_action(owner, "cast", cast_text))
         elif category == "Resolve":
+            flush_pending_mill_group()
             name = resolve_stack_name(iid, name, stack_display_names)
             flush_pending_stack_cast(iid)
             effect_text = active_effect_for_resolved_permanent(name, owner)
@@ -750,6 +835,7 @@ def extract_game_plays(
                 # bookkeeping. Emitting raw ids is less useful than silence.
                 emit(f"{name} resolves")
         elif category == "Copy":
+            flush_pending_mill_group()
             # Jin-Gitaxias and similar effects put a copy on the stack. Track
             # that identity so later effects do not look like the original
             # countered spell still resolved.
@@ -758,6 +844,7 @@ def extract_game_plays(
                 stack_display_names[iid] = copy_name
                 remembered_object_labels[iid] = copy_name
         elif category in death_categories:
+            flush_pending_mill_group()
             flush_pending_stack_cast(ann.get("affectorId"))
             controller = object_owner(iid)
             name = death_label_or_none(name, iid)
@@ -766,6 +853,7 @@ def extract_game_plays(
             emit(phrase_death(owner_label(controller) if controller else None, name))
             remove_active_effects_for_source(iid)
         elif category in {"Destroy", "DestroyNoRegenerate"}:
+            flush_pending_mill_group()
             flush_pending_stack_cast(ann.get("affectorId"))
             source = source_label(ann.get("affectorId"))
             if source and ann.get("affectorId") != iid and source != name:
@@ -774,6 +862,7 @@ def extract_game_plays(
                 emit(phrase_zone_change(None, "destroy", name))
             remove_active_effects_for_source(iid)
         elif category == "Exile":
+            flush_pending_mill_group()
             flush_pending_stack_cast(ann.get("affectorId"))
             source = source_label(ann.get("affectorId"))
             if source and ann.get("affectorId") != iid and source != name:
@@ -782,17 +871,26 @@ def extract_game_plays(
                 emit(phrase_zone_change(None, "exile", name))
             remove_active_effects_for_source(iid)
         elif category == "Countered":
+            flush_pending_mill_group()
             flush_pending_stack_cast(iid)
             emit(phrase_zone_change(None, "counter", name))
             remove_active_effects_for_source(iid)
         elif category == "Discard":
+            flush_pending_mill_group()
             emit(phrase_player_action(owner, "discard", name))
         elif category == "Sacrifice":
+            flush_pending_mill_group()
             emit(phrase_player_action(owner, "sacrifice", name))
             remove_active_effects_for_source(iid)
+        elif category == "Mill":
+            source = mill_source_from_affector(ann.get("affectorId"))
+            mill_owner = owner_label(zone_owner(details.get("zone_src")) or object_owner(iid))
+            if not add_pending_mill(source, mill_owner):
+                flush_pending_mill_group()
 
     def emit_life_change(ann, gsm):
         """Emit life gain/loss lines from ModifiedLife annotations."""
+        flush_pending_mill_group()
         details = detail_dict(ann.get("details"))
         delta = details.get("life")
         affected = ann.get("affectedIds") or []
@@ -810,6 +908,7 @@ def extract_game_plays(
 
     def emit_choice_result(ann, gsm):
         """Emit readable choice-result lines from Arena's numeric choice annotations."""
+        flush_pending_mill_group()
         details = detail_dict(ann.get("details"))
         domain = details.get("Choice_Domain")
         value = details.get("Choice_Value")
@@ -887,6 +986,7 @@ def extract_game_plays(
                 key = (current_match, current_turn, "attack", iid, target_id)
                 if key not in seen_combat:
                     seen_combat.add(key)
+                    flush_pending_mill_group()
                     emit(
                         phrase_player_action(
                             owner_label(obj.get("controllerSeatId")),
@@ -901,6 +1001,7 @@ def extract_game_plays(
                     key = (current_match, current_turn, "block", iid, attacker_id)
                     if key not in seen_combat:
                         seen_combat.add(key)
+                        flush_pending_mill_group()
                         emit(f"{card_label(iid)} blocks {card_label(attacker_id)}")
 
     def emit_continuous_effect_events(gsm):
@@ -932,6 +1033,7 @@ def extract_game_plays(
                 key = (current_match, gsm.get("gameStateId"), "teferi_phase", seat)
                 if key not in seen_state_events:
                     seen_state_events.add(key)
+                    flush_pending_mill_group()
                     plural = "permanent" if count == 1 else "permanents"
                     emit(
                         phrase_player_action(
@@ -967,6 +1069,7 @@ def extract_game_plays(
                     state_key = (current_match, gsm.get("gameStateId"), text)
                     if state_key not in seen_state_events:
                         seen_state_events.add(state_key)
+                        flush_pending_mill_group()
                         emit(text)
 
         phased_in_counts = Counter()
@@ -984,6 +1087,7 @@ def extract_game_plays(
             if key in seen_state_events:
                 continue
             seen_state_events.add(key)
+            flush_pending_mill_group()
             plural = "permanent" if count == 1 else "permanents"
             emit(f"{possessive_pronoun(label)} {count} phased-out {plural} phase in")
             remove_active_effects_with_prefix(("teferi_protection", seat))
@@ -1026,6 +1130,7 @@ def extract_game_plays(
         seen_commander_damage.add(key)
         commander_damage[(source_seat, target_seat)] += damage
         total = commander_damage[(source_seat, target_seat)]
+        flush_pending_mill_group()
         emit(phrase_commander_damage(card_label(source_id), damage, owner_label(target_seat), total))
 
     def emit_no_combat_damage(ann, gsm):
@@ -1049,6 +1154,7 @@ def extract_game_plays(
         if key in seen_no_combat_damage:
             return
         seen_no_combat_damage.add(key)
+        flush_pending_mill_group()
         emit(f"{source} deals no combat damage to {object_pronoun(owner_label(target_seat))}")
 
     def emit_infect_damage(ann, gsm):
@@ -1071,6 +1177,7 @@ def extract_game_plays(
         player_counters[(seat, "poison")] += damage
         total = player_counters[(seat, "poison")]
         source = source_label(source_id) or "infect"
+        flush_pending_mill_group()
         emit(
             f"{subject_pronoun(owner_label(seat))} "
             f"{present_tense_verb(owner_label(seat), 'get', 'gets')} "
@@ -1099,6 +1206,7 @@ def extract_game_plays(
         seat = affected[0]
         player_counters[(seat, counter_name)] += amount
         total = player_counters[(seat, counter_name)]
+        flush_pending_mill_group()
         emit(phrase_player_counter_change(owner_label(seat), counter_name, amount, total))
 
     def update_state(gsm):
@@ -1115,6 +1223,16 @@ def extract_game_plays(
         for obj in gsm.get("gameObjects", []):
             if obj.get("instanceId") is not None:
                 objects[obj["instanceId"]] = obj
+                if obj.get("type") == "GameObjectType_Ability":
+                    source_name = card_name_from_grp(obj.get("objectSourceGrpId"))
+                    if not source_name and obj.get("parentId") is not None:
+                        source_name = source_label(obj.get("parentId"))
+                    if source_name:
+                        # Ability instances may be deleted in the same update
+                        # that reports their zone-change effects. Store the
+                        # source before deletion so later annotations still
+                        # have a readable source.
+                        ability_source_names[obj["instanceId"]] = source_name
                 label = object_label_from_object(obj)
                 if label:
                     remembered_object_labels[obj["instanceId"]] = label
@@ -1158,6 +1276,7 @@ def extract_game_plays(
             scope_text = (scope or "Result").replace("MatchScope_", "").lower()
             reason_text = (reason or result_type or "unknown").replace("ResultReason_", "")
             reason_text = reason_text.replace("ResultType_", "").lower()
+            flush_pending_mill_group()
             emit("")
             if reason_text == "concede":
                 for line in phrase_concede_result(winner, scope_text):
@@ -1325,6 +1444,7 @@ def extract_game_plays(
 
                 match_id = gsm.get("gameInfo", {}).get("matchID")
                 if match_id and match_id != current_match:
+                    flush_pending_mill_group()
                     current_match = match_id
                     current_match_number += 1
                     current_match_lines = []
@@ -1351,7 +1471,10 @@ def extract_game_plays(
                     seen_no_combat_damage.clear()
                     remembered_object_labels.clear()
                     stack_display_names.clear()
+                    ability_trigger_ids.clear()
+                    ability_source_names.clear()
                     pending_stack_casts.clear()
+                    pending_mill_group = None
                     active_effects.clear()
                     commander_grps_by_seat.clear()
                     commander_instance_ids.clear()
@@ -1377,6 +1500,7 @@ def extract_game_plays(
 
                 turn_info = gsm.get("turnInfo", {})
                 if "turnNumber" in turn_info and turn_info["turnNumber"] != current_turn:
+                    flush_pending_mill_group()
                     current_turn = turn_info["turnNumber"]
                     emit("")
                     emit(
@@ -1402,6 +1526,15 @@ def extract_game_plays(
                     ann_types = set(ann.get("type") or [])
                     if "AnnotationType_ObjectIdChanged" in ann_types:
                         note_object_id_change(ann)
+                    elif "AnnotationType_AbilityInstanceCreated" in ann_types:
+                        for affected_id in ann.get("affectedIds") or []:
+                            ability_trigger_ids.add(affected_id)
+                            obj = objects.get(affected_id)
+                            if obj:
+                                label = object_label_from_object(obj)
+                                if label:
+                                    remembered_object_labels[affected_id] = label
+                                    stack_display_names[affected_id] = label
                     elif "AnnotationType_ZoneTransfer" in ann_types:
                         emit_zone_transfer(ann, gsm)
                     elif "AnnotationType_ModifiedLife" in ann_types:
@@ -1417,6 +1550,8 @@ def extract_game_plays(
                         or "AnnotationType_CounterRemoved" in ann_types
                     ):
                         emit_player_counter_change(ann, gsm)
+
+    flush_pending_mill_group()
 
     if show_progress:
         render_progress(force=True)

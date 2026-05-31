@@ -2,6 +2,7 @@ import unittest
 
 from mtga_extract_games import (
     active_effect_for_resolved_permanent,
+    ability_object_label,
     copied_object_label,
     death_label_or_none,
     object_pronoun,
@@ -11,6 +12,7 @@ from mtga_extract_games import (
     phrase_death,
     phrase_life_change,
     phrase_library_count,
+    phrase_mill_summary,
     phrase_player_has_counter,
     phrase_player_counter_change,
     phrase_player_action,
@@ -146,6 +148,25 @@ class WordingTests(unittest.TestCase):
     def test_countered_spell_copy_wording_is_distinct(self):
         self.assertEqual(copied_object_label("Heartless Act", True), "A copy of Heartless Act")
         self.assertEqual(copied_object_label("Heartless Act", False), "Heartless Act")
+        self.assertEqual(copied_object_label("Mesmeric Orb", True), "A copy of Mesmeric Orb")
+
+    def test_ability_object_wording_uses_source_card(self):
+        self.assertEqual(ability_object_label("Mesmeric Orb", True), "Mesmeric Orb trigger")
+        self.assertEqual(ability_object_label("Cavern of Souls", False), "Cavern of Souls ability")
+
+    def test_grouped_mill_wording_is_source_aware(self):
+        self.assertEqual(
+            phrase_mill_summary("Mesmeric Orb", "Me", 13),
+            "Mesmeric Orb triggers resolve; I mill 13 cards",
+        )
+        self.assertEqual(
+            phrase_mill_summary("Mesmeric Orb", "Opponent", 1),
+            "Mesmeric Orb trigger resolves; Opponent mills 1 card",
+        )
+        self.assertEqual(
+            phrase_mill_summary(None, None, 3),
+            "A source triggers resolve; a player mills 3 cards",
+        )
 
     def test_leyline_active_effect_wording(self):
         self.assertEqual(
