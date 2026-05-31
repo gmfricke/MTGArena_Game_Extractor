@@ -251,6 +251,15 @@ def phrase_library_count(label: str, count: int | None) -> str:
     return f"{label}: {count} card{plural}"
 
 
+def phrase_mulligan(label: str, kept_count: int | None = None) -> str:
+    """Render a mulligan without assuming every format reduces hand size."""
+    base = f"{subject_pronoun(label)} {present_tense_verb(label, 'mulligan', 'mulligans')}"
+    if kept_count is None:
+        return base
+    plural = "" if kept_count == 1 else "s"
+    return f"{base} (kept {kept_count} card{plural})"
+
+
 def is_low_fidelity_update_without_turn(gsm: dict) -> bool:
     """Detect speculative Send updates that Arena may replace shortly after."""
     if gsm.get("update") != "GameStateUpdate_Send":
@@ -489,6 +498,13 @@ def extract_game_plays(
         """Return the seat that owns a zone, when Arena exposes one."""
         zone = zones.get(zone_id, {})
         return zone.get("ownerSeatId")
+
+    def hand_count_for_seat(seat):
+        """Count cards in a player's hand zone when the game state exposes it."""
+        for zone in zones.values():
+            if zone.get("type") == "ZoneType_Hand" and zone.get("ownerSeatId") == seat:
+                return len(zone.get("objectInstanceIds") or [])
+        return None
 
     def object_owner(instance_id):
         """Return the controlling/owning seat for an object instance."""
@@ -1249,13 +1265,9 @@ def extract_game_plays(
                 key = (current_match, seat, mulligans)
                 if key not in seen_mulligans:
                     seen_mulligans.add(key)
-                    emit(
-                        phrase_player_action(
-                            owner_label(seat),
-                            "mulligan",
-                            f"to {7 - int(mulligans)}",
-                        )
-                    )
+                    label = owner_label(seat)
+                    kept_count = hand_count_for_seat(seat) if label == "Me" else None
+                    emit(phrase_mulligan(label, kept_count))
 
         for deleted_id in gsm.get("diffDeletedInstanceIds") or []:
             objects.pop(deleted_id, None)

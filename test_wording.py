@@ -12,6 +12,7 @@ from mtga_extract_games import (
     phrase_death,
     phrase_life_change,
     phrase_library_count,
+    phrase_mulligan,
     phrase_mill_summary,
     phrase_player_has_counter,
     phrase_player_counter_change,
@@ -124,6 +125,14 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(phrase_library_count("Me", 1), "Me: 1 card")
         self.assertEqual(phrase_library_count("Opponent", 42), "Opponent: 42 cards")
         self.assertEqual(phrase_library_count("Player 1", None), "Player 1: unknown")
+
+    def test_mulligan_wording_does_not_assume_hand_size(self):
+        self.assertEqual(phrase_mulligan("Me"), "I mulligan")
+        self.assertEqual(phrase_mulligan("Me", 7), "I mulligan (kept 7 cards)")
+        self.assertEqual(
+            phrase_mulligan("Opponent", 1),
+            "Opponent mulligans (kept 1 card)",
+        )
 
     def test_low_fidelity_update_without_turn_context_is_delayed(self):
         self.assertTrue(is_low_fidelity_update_without_turn({"update": "GameStateUpdate_Send"}))
