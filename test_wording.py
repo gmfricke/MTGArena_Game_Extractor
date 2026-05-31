@@ -17,6 +17,7 @@ from mtga_extract_games import (
     phrase_choice_value,
     phrase_death,
     phrase_grouped_deaths,
+    phrase_incomplete_game_notice,
     phrase_life_change,
     phrase_library_count,
     phrase_mulligan,
@@ -123,6 +124,18 @@ class WordingTests(unittest.TestCase):
         )
         self.assertEqual(phrase_choice_value("creature type", 1, "Angel"), "Angel")
         self.assertEqual(phrase_choice_value("creature type", 25, "Elemental"), "Elemental")
+
+    def test_incomplete_game_notice_is_conservative(self):
+        self.assertEqual(
+            phrase_incomplete_game_notice(
+                "Postgame course/event data includes a loss count after this match."
+            ),
+            [
+                "Game appears to have ended, but no final GRE result was written to Player.log.",
+                "Postgame course/event data includes a loss count after this match.",
+                "Final life total is unavailable from the gameplay log.",
+            ],
+        )
 
     def test_enum_loader_reads_creature_types_from_card_database(self):
         with tempfile.TemporaryDirectory() as tmpdir:

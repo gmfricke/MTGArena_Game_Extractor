@@ -340,6 +340,17 @@ def phrase_choice_value(domain_text: str, value: int, decoded_value: str | None)
     return f"unknown {domain_text} {value}"
 
 
+def phrase_incomplete_game_notice(postgame_hint: str | None = None) -> list[str]:
+    """Explain that Arena returned postgame data without final GRE results."""
+    lines = [
+        "Game appears to have ended, but no final GRE result was written to Player.log."
+    ]
+    if postgame_hint:
+        lines.append(postgame_hint)
+    lines.append("Final life total is unavailable from the gameplay log.")
+    return lines
+
+
 def is_low_fidelity_update_without_turn(gsm: dict) -> bool:
     """Detect speculative Send updates that Arena may replace shortly after."""
     if gsm.get("update") != "GameStateUpdate_Send":
@@ -473,6 +484,40 @@ def extract_game_plays(
     def emit(line=""):
         if current_match_lines is not None:
             current_match_lines.append(line)
+
+    def mark_postgame_payload(root):
+        """Remember postgame account/course blobs that appear after GRE stops."""
+        if current_match_record is None or current_match_record.get("has_result"):
+            return
+        if "InventoryInfo" in root or "UpdatedGraphs" in root:
+            current_match_record["saw_postgame_payload"] = True
+        courses = root.get("Courses") or []
+        if courses:
+            current_match_record["saw_postgame_payload"] = True
+        has_loss_count = any("CurrentLosses" in course for course in courses)
+        has_win_count = any("CurrentWins" in course for course in courses)
+        if has_loss_count and not current_match_record.get("postgame_hint"):
+            current_match_record["postgame_hint"] = (
+                "Postgame course/event data includes a loss count after this match."
+            )
+        elif has_win_count and not current_match_record.get("postgame_hint"):
+            current_match_record["postgame_hint"] = (
+                "Postgame course/event data includes a win count after this match."
+            )
+
+    def finalize_current_match():
+        """Append a conservative notice when a match lacks final GRE results."""
+        flush_pending_event_groups()
+        if current_match_record is None or current_match_record.get("finalized"):
+            return
+        current_match_record["finalized"] = True
+        if current_match_record.get("has_result"):
+            return
+        if not current_match_record.get("saw_postgame_payload"):
+            return
+        emit("")
+        for line in phrase_incomplete_game_notice(current_match_record.get("postgame_hint")):
+            emit(line)
 
     def add_active_effect(key, text, source_id=None, until=None):
         """Record a major ongoing effect for turn-state summaries."""
@@ -1395,6 +1440,8 @@ def extract_game_plays(
             if key in seen_results:
                 continue
             seen_results.add(key)
+            if current_match_record is not None:
+                current_match_record["has_result"] = True
 
             winner = team_label(winning_team_id)
             scope_text = (scope or "Result").replace("MatchScope_", "").lower()
@@ -1565,7 +1612,7 @@ def extract_game_plays(
 
                 match_id = gsm.get("gameInfo", {}).get("matchID")
                 if match_id and match_id != current_match:
-                    flush_pending_event_groups()
+                    finalize_current_match()
                     current_match = match_id
                     current_match_number += 1
                     current_match_lines = []
@@ -1577,6 +1624,10 @@ def extract_game_plays(
                         "debug_hits": [],
                         "debug_seen_objects": set(),
                         "choice_events": [],
+                        "has_result": False,
+                        "saw_postgame_payload": False,
+                        "postgame_hint": None,
+                        "finalized": False,
                     }
                     transcript_matches.append(current_match_record)
                     event_index = 0
@@ -1674,7 +1725,10 @@ def extract_game_plays(
 
                 emit_match_results(gsm)
 
-    flush_pending_event_groups()
+            if not root.get("greToClientEvent"):
+                mark_postgame_payload(root)
+
+    finalize_current_match()
 
     if show_progress:
         render_progress(force=True)
