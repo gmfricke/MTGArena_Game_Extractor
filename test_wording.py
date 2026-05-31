@@ -1,10 +1,15 @@
 import unittest
+import sqlite3
+import tempfile
+from pathlib import Path
 
 from mtga_extract_games import (
     active_effect_for_resolved_permanent,
     ability_object_label,
+    clean_localized_enum_name,
     copied_object_label,
     death_label_or_none,
+    load_enum_value_names,
     object_pronoun,
     phrase_commander_cast_note,
     phrase_commander_damage,
@@ -92,7 +97,7 @@ class WordingTests(unittest.TestCase):
         )
         self.assertEqual(
             phrase_concede_result("Me", "match"),
-            ["Match result: Opponent conceded", "Winner: Me"],
+            ["Match result: Opponent conceded", "Match winner: Me"],
         )
         self.assertEqual(
             phrase_concede_result("Opponent", "game"),
@@ -118,6 +123,35 @@ class WordingTests(unittest.TestCase):
         )
         self.assertEqual(phrase_choice_value("creature type", 1, "Angel"), "Angel")
         self.assertEqual(phrase_choice_value("creature type", 25, "Elemental"), "Elemental")
+
+    def test_enum_loader_reads_creature_types_from_card_database(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            carddb = Path(tmpdir) / "carddb.mtga"
+            con = sqlite3.connect(carddb)
+            cur = con.cursor()
+            cur.execute("CREATE TABLE Enums(Type TEXT, Value INT, LocId INT)")
+            cur.execute("CREATE TABLE Localizations_enUS(LocId INT, Formatted INT, Loc TEXT)")
+            cur.executemany(
+                "INSERT INTO Enums VALUES (?, ?, ?)",
+                [("SubType", 25, 100), ("SubType", 83, 101), ("Color", 25, 102)],
+            )
+            cur.executemany(
+                "INSERT INTO Localizations_enUS VALUES (?, ?, ?)",
+                [
+                    (100, 1, "Elemental"),
+                    (101, 1, "<nobr>Power-Plant</nobr>"),
+                    (101, 2, "Power-Plant"),
+                    (102, 1, "Not a subtype"),
+                ],
+            )
+            con.commit()
+            con.close()
+
+            self.assertEqual(
+                load_enum_value_names(carddb, "SubType"),
+                {25: "Elemental", 83: "Power-Plant"},
+            )
+        self.assertEqual(clean_localized_enum_name("<nobr>Assembly-Worker</nobr>"), "Assembly-Worker")
 
     def test_commander_wording(self):
         self.assertEqual(

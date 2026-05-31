@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import re
 import sqlite3
 import sys
 import time
@@ -67,6 +68,50 @@ def find_grp_ids_by_card_name(carddb_path: Path, card_name: str) -> dict[int, st
     if exact:
         return exact
     return {grp_id: name for grp_id, name in by_grp.items() if needle in name.casefold()}
+
+
+def clean_localized_enum_name(name: str | None) -> str | None:
+    """Strip simple Arena localization markup from enum labels."""
+    if not name:
+        return None
+    return re.sub(r"</?nobr>", "", name).strip()
+
+
+def load_enum_value_names(carddb_path: Path, enum_type: str) -> dict[int, str]:
+    """Load Arena enum value names, such as SubType 25 -> Elemental."""
+    con = sqlite3.connect(carddb_path)
+    cur = con.cursor()
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = {row[0] for row in cur.fetchall()}
+    if not {"Enums", "Localizations_enUS"}.issubset(tables):
+        con.close()
+        return {}
+
+    cur.execute(
+        """
+        SELECT e.Value, l.Loc, l.Formatted
+        FROM Enums e
+        JOIN Localizations_enUS l
+          ON e.LocId = l.LocId
+        WHERE e.Type = ?
+        ORDER BY
+          e.Value,
+          CASE l.Formatted
+            WHEN 0 THEN 0
+            WHEN 2 THEN 1
+            WHEN 1 THEN 2
+            ELSE 3
+          END
+        """,
+        (enum_type,),
+    )
+    mapping = {}
+    for value, name, _formatted in cur.fetchall():
+        clean_name = clean_localized_enum_name(name)
+        if clean_name and int(value) not in mapping:
+            mapping[int(value)] = clean_name
+    con.close()
+    return mapping
 
 
 def subject_pronoun(label: str) -> str:
@@ -150,6 +195,7 @@ def phrase_zone_change(source: str | None, verb: str, target: str) -> str:
 def phrase_concede_result(winner: str, scope_text: str) -> list[str]:
     """Render concession results as two concise narrative lines."""
     loser = "Opponent" if winner == "Me" else "Me" if winner == "Opponent" else None
+    winner_line = f"Match winner: {winner}" if scope_text == "match" else f"Winner: {winner}"
     if loser == "Me":
         concession = "I concede" if scope_text == "game" else "Match result: I conceded"
     elif loser == "Opponent":
@@ -164,7 +210,7 @@ def phrase_concede_result(winner: str, scope_text: str) -> list[str]:
             if scope_text == "game"
             else "Match result: opponent conceded"
         )
-    return [concession, f"Winner: {winner}"]
+    return [concession, winner_line]
 
 
 def phrase_result(winner: str, scope_text: str, reason_text: str | None = None) -> list[str]:
@@ -314,6 +360,7 @@ def extract_game_plays(
     show_progress: bool | None = None,
     show_resolves: bool = True,
     show_turn_state: bool = True,
+    enum_value_names: dict[str, dict[int, str]] | None = None,
 ) -> None:
     """Extract a readable play transcript from MTGA Player.log."""
     zones = {}
@@ -378,12 +425,15 @@ def extract_game_plays(
         5: "creature type",
         6: "color",
     }
+    enum_value_names = enum_value_names or {}
+    subtype_names = enum_value_names.get("SubType") or {}
     choice_value_names = {
         # Observed in current GRE logs:
         # Serra's Emissary: domain 4, value 2 -> Creature.
         # Patchwork Banner / Vanquisher's Banner / Cavern of Souls:
         # domain 5, value 1 -> Angel.
-        # Cavern of Souls: domain 5, value 25 -> Elemental.
+        # Creature type values are Arena SubType enum values when the card DB
+        # exposes them, so Cavern value 25 comes from SubType 25 -> Elemental.
         # Nyx Lotus / Nykthos: domain 6, value 1 -> White.
         4: {
             1: "Artifact",
@@ -395,10 +445,7 @@ def extract_game_plays(
             7: "Sorcery",
             8: "Battle",
         },
-        5: {
-            1: "Angel",
-            25: "Elemental",
-        },
+        5: {1: "Angel", **subtype_names},
         6: {
             1: "White",
             2: "Blue",
@@ -1841,6 +1888,12 @@ No pip install step is required; this script only uses Python's standard library
         parser.error("--last must be 1 or greater")
 
     grp_to_name = load_grp_id_to_name(carddb)
+    enum_value_names = {
+        # Player choice payloads for creature types use the same numeric values
+        # as the card database SubType enum, which keeps this from becoming a
+        # handwritten creature-type list.
+        "SubType": load_enum_value_names(carddb, "SubType"),
+    }
     debug_grp_ids = set(args.debug_grpid)
     for card_name in args.debug_card:
         matches = find_grp_ids_by_card_name(carddb, card_name)
@@ -1863,6 +1916,7 @@ No pip install step is required; this script only uses Python's standard library
         show_progress=True if args.progress else False if args.no_progress else None,
         show_resolves=not args.no_resolves,
         show_turn_state=not args.no_turn_state,
+        enum_value_names=enum_value_names,
     )
 
 
