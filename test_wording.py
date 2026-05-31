@@ -117,6 +117,7 @@ class WordingTests(unittest.TestCase):
             "unknown creature type 19",
         )
         self.assertEqual(phrase_choice_value("creature type", 1, "Angel"), "Angel")
+        self.assertEqual(phrase_choice_value("creature type", 25, "Elemental"), "Elemental")
 
     def test_commander_wording(self):
         self.assertEqual(

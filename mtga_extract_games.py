@@ -383,6 +383,7 @@ def extract_game_plays(
         # Serra's Emissary: domain 4, value 2 -> Creature.
         # Patchwork Banner / Vanquisher's Banner / Cavern of Souls:
         # domain 5, value 1 -> Angel.
+        # Cavern of Souls: domain 5, value 25 -> Elemental.
         # Nyx Lotus / Nykthos: domain 6, value 1 -> White.
         4: {
             1: "Artifact",
@@ -396,6 +397,7 @@ def extract_game_plays(
         },
         5: {
             1: "Angel",
+            25: "Elemental",
         },
         6: {
             1: "White",
