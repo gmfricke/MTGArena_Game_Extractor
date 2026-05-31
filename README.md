@@ -173,6 +173,12 @@ python3 mtga_extract_games.py "$LOG" "$CARDDB" --last 1 --debug-choices
 
 This is meant to help find where Arena records choices like creature type, protection type, modal choices, or similar decisions.
 
+## Fair Use And Intent
+
+This code was written to parse a plaintext log file that MTG Arena writes to my own machine.
+
+There is no intent to decode, decrypt, or bypass anything. There is no intent to distribute copyrighted material, copy game assets, or change the game. The goal is only to turn my own local game log into a readable text transcript so I can review games I played.
+
 ## License
 
 This project is released under the MIT License.
