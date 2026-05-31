@@ -119,6 +119,22 @@ def phrase_death(controller_label: str | None, card_name: str) -> str:
     return f"{possessive} {card_name} dies"
 
 
+def phrase_grouped_deaths(controller_label: str | None, card_name: str, count: int) -> str:
+    """Render consecutive identical token deaths as one compact line."""
+    if count <= 1:
+        return phrase_death(controller_label, card_name)
+    if controller_label == "Me":
+        owner = "my"
+    elif controller_label == "Opponent":
+        owner = "opponent"
+    elif controller_label:
+        owner = f"{controller_label}'s"
+    else:
+        owner = ""
+    prefix = f"{count} {owner} ".strip()
+    return f"{prefix} {card_name} tokens die"
+
+
 def phrase_zone_change(source: str | None, verb: str, target: str) -> str:
     """Render destroy/exile/counter events with source attribution if known."""
     passive = {
@@ -149,6 +165,15 @@ def phrase_concede_result(winner: str, scope_text: str) -> list[str]:
             else "Match result: opponent conceded"
         )
     return [concession, f"Winner: {winner}"]
+
+
+def phrase_result(winner: str, scope_text: str, reason_text: str | None = None) -> list[str]:
+    """Render non-concession results without duplicated Arena labels."""
+    if reason_text == "concede":
+        return phrase_concede_result(winner, scope_text)
+    if scope_text == "match":
+        return [f"Match winner: {winner}"]
+    return [f"Winner: {winner}"]
 
 
 def phrase_commander_cast_note(cast_count: int) -> str:
@@ -260,6 +285,15 @@ def phrase_mulligan(label: str, kept_count: int | None = None) -> str:
     return f"{base} (kept {kept_count} card{plural})"
 
 
+def phrase_choice_value(domain_text: str, value: int, decoded_value: str | None) -> str:
+    """Render decoded choices and explain unknown numeric choice values."""
+    if decoded_value:
+        return decoded_value
+    if domain_text == "creature type":
+        return f"unknown creature type {value}"
+    return f"unknown {domain_text} {value}"
+
+
 def is_low_fidelity_update_without_turn(gsm: dict) -> bool:
     """Detect speculative Send updates that Arena may replace shortly after."""
     if gsm.get("update") != "GameStateUpdate_Send":
@@ -301,6 +335,7 @@ def extract_game_plays(
     ability_source_names = {}
     pending_stack_casts = {}
     pending_mill_group = None
+    pending_death_events = []
     active_effects = {}
     commander_grps_by_seat = {}
     commander_instance_ids = set()
@@ -793,6 +828,26 @@ def extract_game_plays(
         )
         pending_mill_group = None
 
+    def flush_pending_death_group():
+        """Emit a compact line for identical deaths in one contiguous death burst."""
+        nonlocal pending_death_events
+        if not pending_death_events:
+            return
+        grouped = Counter((event["controller"], event["name"]) for event in pending_death_events)
+        emitted = set()
+        for event in pending_death_events:
+            key = (event["controller"], event["name"])
+            if key in emitted:
+                continue
+            emitted.add(key)
+            emit(phrase_grouped_deaths(event["controller"], event["name"], grouped[key]))
+        pending_death_events = []
+
+    def flush_pending_event_groups():
+        """Flush grouped event summaries before emitting an unrelated event."""
+        flush_pending_mill_group()
+        flush_pending_death_group()
+
     def add_pending_mill(source, owner, count=1):
         """Group repeated mill zone transfers by source and milled player."""
         nonlocal pending_mill_group
@@ -809,6 +864,10 @@ def extract_game_plays(
             pending_mill_group = {"source": source, "owner": owner, "count": count}
         return True
 
+    def add_pending_death(controller, name):
+        """Hold deaths briefly so one destroy/lethal batch can be summarized."""
+        pending_death_events.append({"controller": controller, "name": name})
+
     def emit_zone_transfer(ann, gsm):
         """Emit cast/play/zone-change lines, including command-zone casts."""
         details = detail_dict(ann.get("details"))
@@ -823,10 +882,10 @@ def extract_game_plays(
         from_command = is_command_zone(details.get("zone_src"))
 
         if category == "PlayLand":
-            flush_pending_mill_group()
+            flush_pending_event_groups()
             emit(phrase_player_action(owner, "play", name))
         elif category == "CastSpell":
-            flush_pending_mill_group()
+            flush_pending_event_groups()
             pending_stack_casts.pop(iid, None)
             stack_display_names[iid] = name
             suffix = " from command zone" if from_command else ""
@@ -840,7 +899,7 @@ def extract_game_plays(
             else:
                 emit(phrase_player_action(owner, "cast", cast_text))
         elif category == "Resolve":
-            flush_pending_mill_group()
+            flush_pending_event_groups()
             name = resolve_stack_name(iid, name, stack_display_names)
             flush_pending_stack_cast(iid)
             effect_text = active_effect_for_resolved_permanent(name, owner)
@@ -851,7 +910,7 @@ def extract_game_plays(
                 # bookkeeping. Emitting raw ids is less useful than silence.
                 emit(f"{name} resolves")
         elif category == "Copy":
-            flush_pending_mill_group()
+            flush_pending_event_groups()
             # Jin-Gitaxias and similar effects put a copy on the stack. Track
             # that identity so later effects do not look like the original
             # countered spell still resolved.
@@ -866,10 +925,10 @@ def extract_game_plays(
             name = death_label_or_none(name, iid)
             if not name:
                 return
-            emit(phrase_death(owner_label(controller) if controller else None, name))
+            add_pending_death(owner_label(controller) if controller else None, name)
             remove_active_effects_for_source(iid)
         elif category in {"Destroy", "DestroyNoRegenerate"}:
-            flush_pending_mill_group()
+            flush_pending_event_groups()
             flush_pending_stack_cast(ann.get("affectorId"))
             source = source_label(ann.get("affectorId"))
             if source and ann.get("affectorId") != iid and source != name:
@@ -878,7 +937,7 @@ def extract_game_plays(
                 emit(phrase_zone_change(None, "destroy", name))
             remove_active_effects_for_source(iid)
         elif category == "Exile":
-            flush_pending_mill_group()
+            flush_pending_event_groups()
             flush_pending_stack_cast(ann.get("affectorId"))
             source = source_label(ann.get("affectorId"))
             if source and ann.get("affectorId") != iid and source != name:
@@ -887,26 +946,26 @@ def extract_game_plays(
                 emit(phrase_zone_change(None, "exile", name))
             remove_active_effects_for_source(iid)
         elif category == "Countered":
-            flush_pending_mill_group()
+            flush_pending_event_groups()
             flush_pending_stack_cast(iid)
             emit(phrase_zone_change(None, "counter", name))
             remove_active_effects_for_source(iid)
         elif category == "Discard":
-            flush_pending_mill_group()
+            flush_pending_event_groups()
             emit(phrase_player_action(owner, "discard", name))
         elif category == "Sacrifice":
-            flush_pending_mill_group()
+            flush_pending_event_groups()
             emit(phrase_player_action(owner, "sacrifice", name))
             remove_active_effects_for_source(iid)
         elif category == "Mill":
             source = mill_source_from_affector(ann.get("affectorId"))
             mill_owner = owner_label(zone_owner(details.get("zone_src")) or object_owner(iid))
             if not add_pending_mill(source, mill_owner):
-                flush_pending_mill_group()
+                flush_pending_event_groups()
 
     def emit_life_change(ann, gsm):
         """Emit life gain/loss lines from ModifiedLife annotations."""
-        flush_pending_mill_group()
+        flush_pending_event_groups()
         details = detail_dict(ann.get("details"))
         delta = details.get("life")
         affected = ann.get("affectedIds") or []
@@ -924,7 +983,7 @@ def extract_game_plays(
 
     def emit_choice_result(ann, gsm):
         """Emit readable choice-result lines from Arena's numeric choice annotations."""
-        flush_pending_mill_group()
+        flush_pending_event_groups()
         details = detail_dict(ann.get("details"))
         domain = details.get("Choice_Domain")
         value = details.get("Choice_Value")
@@ -937,7 +996,11 @@ def extract_game_plays(
         affected = ann.get("affectedIds") or []
         chooser = owner_label(seat or (affected[0] if affected else None))
         domain_text = choice_domain_names.get(domain, f"choice domain {domain}")
-        value_text = choice_value_names.get(domain, {}).get(value, f"value {value}")
+        value_text = phrase_choice_value(
+            domain_text,
+            value,
+            choice_value_names.get(domain, {}).get(value),
+        )
 
         key = (
             current_match,
@@ -1002,7 +1065,7 @@ def extract_game_plays(
                 key = (current_match, current_turn, "attack", iid, target_id)
                 if key not in seen_combat:
                     seen_combat.add(key)
-                    flush_pending_mill_group()
+                    flush_pending_event_groups()
                     emit(
                         phrase_player_action(
                             owner_label(obj.get("controllerSeatId")),
@@ -1017,7 +1080,7 @@ def extract_game_plays(
                     key = (current_match, current_turn, "block", iid, attacker_id)
                     if key not in seen_combat:
                         seen_combat.add(key)
-                        flush_pending_mill_group()
+                        flush_pending_event_groups()
                         emit(f"{card_label(iid)} blocks {card_label(attacker_id)}")
 
     def emit_continuous_effect_events(gsm):
@@ -1049,7 +1112,7 @@ def extract_game_plays(
                 key = (current_match, gsm.get("gameStateId"), "teferi_phase", seat)
                 if key not in seen_state_events:
                     seen_state_events.add(key)
-                    flush_pending_mill_group()
+                    flush_pending_event_groups()
                     plural = "permanent" if count == 1 else "permanents"
                     emit(
                         phrase_player_action(
@@ -1085,7 +1148,7 @@ def extract_game_plays(
                     state_key = (current_match, gsm.get("gameStateId"), text)
                     if state_key not in seen_state_events:
                         seen_state_events.add(state_key)
-                        flush_pending_mill_group()
+                        flush_pending_event_groups()
                         emit(text)
 
         phased_in_counts = Counter()
@@ -1103,7 +1166,7 @@ def extract_game_plays(
             if key in seen_state_events:
                 continue
             seen_state_events.add(key)
-            flush_pending_mill_group()
+            flush_pending_event_groups()
             plural = "permanent" if count == 1 else "permanents"
             emit(f"{possessive_pronoun(label)} {count} phased-out {plural} phase in")
             remove_active_effects_with_prefix(("teferi_protection", seat))
@@ -1146,7 +1209,7 @@ def extract_game_plays(
         seen_commander_damage.add(key)
         commander_damage[(source_seat, target_seat)] += damage
         total = commander_damage[(source_seat, target_seat)]
-        flush_pending_mill_group()
+        flush_pending_event_groups()
         emit(phrase_commander_damage(card_label(source_id), damage, owner_label(target_seat), total))
 
     def emit_no_combat_damage(ann, gsm):
@@ -1170,7 +1233,7 @@ def extract_game_plays(
         if key in seen_no_combat_damage:
             return
         seen_no_combat_damage.add(key)
-        flush_pending_mill_group()
+        flush_pending_event_groups()
         emit(f"{source} deals no combat damage to {object_pronoun(owner_label(target_seat))}")
 
     def emit_infect_damage(ann, gsm):
@@ -1193,7 +1256,7 @@ def extract_game_plays(
         player_counters[(seat, "poison")] += damage
         total = player_counters[(seat, "poison")]
         source = source_label(source_id) or "infect"
-        flush_pending_mill_group()
+        flush_pending_event_groups()
         emit(
             f"{subject_pronoun(owner_label(seat))} "
             f"{present_tense_verb(owner_label(seat), 'get', 'gets')} "
@@ -1222,7 +1285,7 @@ def extract_game_plays(
         seat = affected[0]
         player_counters[(seat, counter_name)] += amount
         total = player_counters[(seat, counter_name)]
-        flush_pending_mill_group()
+        flush_pending_event_groups()
         emit(phrase_player_counter_change(owner_label(seat), counter_name, amount, total))
 
     def update_state(gsm):
@@ -1288,13 +1351,10 @@ def extract_game_plays(
             scope_text = (scope or "Result").replace("MatchScope_", "").lower()
             reason_text = (reason or result_type or "unknown").replace("ResultReason_", "")
             reason_text = reason_text.replace("ResultType_", "").lower()
-            flush_pending_mill_group()
+            flush_pending_event_groups()
             emit("")
-            if reason_text == "concede":
-                for line in phrase_concede_result(winner, scope_text):
-                    emit(line)
-            else:
-                emit(f"Winner: {winner} ({scope_text}, {reason_text})")
+            for line in phrase_result(winner, scope_text, reason_text):
+                emit(line)
 
     def record_debug(ann):
         """Record annotation counts and one sample payload for debug output."""
@@ -1456,7 +1516,7 @@ def extract_game_plays(
 
                 match_id = gsm.get("gameInfo", {}).get("matchID")
                 if match_id and match_id != current_match:
-                    flush_pending_mill_group()
+                    flush_pending_event_groups()
                     current_match = match_id
                     current_match_number += 1
                     current_match_lines = []
@@ -1487,6 +1547,7 @@ def extract_game_plays(
                     ability_source_names.clear()
                     pending_stack_casts.clear()
                     pending_mill_group = None
+                    pending_death_events.clear()
                     active_effects.clear()
                     commander_grps_by_seat.clear()
                     commander_instance_ids.clear()
@@ -1508,11 +1569,10 @@ def extract_game_plays(
                 update_state(gsm)
                 if known_local_seat is None:
                     known_local_seat = infer_local_seat()
-                emit_match_results(gsm)
 
                 turn_info = gsm.get("turnInfo", {})
                 if "turnNumber" in turn_info and turn_info["turnNumber"] != current_turn:
-                    flush_pending_mill_group()
+                    flush_pending_event_groups()
                     current_turn = turn_info["turnNumber"]
                     emit("")
                     emit(
@@ -1563,7 +1623,9 @@ def extract_game_plays(
                     ):
                         emit_player_counter_change(ann, gsm)
 
-    flush_pending_mill_group()
+                emit_match_results(gsm)
+
+    flush_pending_event_groups()
 
     if show_progress:
         render_progress(force=True)

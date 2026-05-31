@@ -9,7 +9,9 @@ from mtga_extract_games import (
     phrase_commander_cast_note,
     phrase_commander_damage,
     phrase_concede_result,
+    phrase_choice_value,
     phrase_death,
+    phrase_grouped_deaths,
     phrase_life_change,
     phrase_library_count,
     phrase_mulligan,
@@ -17,6 +19,7 @@ from mtga_extract_games import (
     phrase_player_has_counter,
     phrase_player_counter_change,
     phrase_player_action,
+    phrase_result,
     phrase_zone_change,
     resolve_stack_name,
     is_low_fidelity_update_without_turn,
@@ -61,6 +64,13 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(phrase_death("Me", "Giada, Font of Hope"), "My Giada, Font of Hope dies")
         self.assertEqual(phrase_death(None, "Angel"), "Angel dies")
 
+    def test_grouped_identical_token_deaths(self):
+        self.assertEqual(
+            phrase_grouped_deaths("Opponent", "Human", 2),
+            "2 opponent Human tokens die",
+        )
+        self.assertEqual(phrase_grouped_deaths("Me", "Plant", 1), "My Plant dies")
+
     def test_passive_zone_change_wording_examples(self):
         self.assertEqual(
             phrase_zone_change(None, "exile", "Giada, Font of Hope"),
@@ -88,6 +98,25 @@ class WordingTests(unittest.TestCase):
             phrase_concede_result("Opponent", "game"),
             ["I concede", "Winner: Opponent"],
         )
+
+    def test_result_wording_avoids_duplicate_labels(self):
+        self.assertEqual(phrase_result("Opponent", "game", "game"), ["Winner: Opponent"])
+        self.assertEqual(
+            phrase_result("Opponent", "match", "game"),
+            ["Match winner: Opponent"],
+        )
+
+    def test_lethal_life_loss_is_kept_before_winner_line(self):
+        lines = [phrase_life_change("Me", -18, -3)]
+        lines.extend(phrase_result("Opponent", "game", "game"))
+        self.assertEqual(lines, ["I lose 18 life (-3)", "Winner: Opponent"])
+
+    def test_numeric_choice_fallback_explains_domain(self):
+        self.assertEqual(
+            phrase_choice_value("creature type", 19, None),
+            "unknown creature type 19",
+        )
+        self.assertEqual(phrase_choice_value("creature type", 1, "Angel"), "Angel")
 
     def test_commander_wording(self):
         self.assertEqual(
