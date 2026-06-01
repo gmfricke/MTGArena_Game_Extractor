@@ -12,6 +12,7 @@ from mtga_extract_games import (
     append_target_phrase,
     base_cast_name,
     clean_localized_enum_name,
+    combine_duplicate_transcript_lines,
     compact_counted_name,
     counter_summary_suffix,
     copied_object_label,
@@ -67,6 +68,30 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(state_zone_label("Player 1", "library"), "Player 1's library")
         self.assertEqual(state_player_heading("Me"), "My side")
         self.assertEqual(state_player_heading("Opponent"), "Opponent")
+
+    def test_adjacent_duplicate_transcript_lines_are_combined(self):
+        lines = [
+            "=== Turn 4: Opponent ===",
+            "Opponent attacks me with Tentacle",
+            "Opponent attacks me with Tentacle",
+            "Opponent attacks me with Tentacle",
+            "Jerren, Corrupted Bishop blocks Tentacle",
+            "Opponent discards Island",
+            "Opponent discards Island",
+            "Winner: Opponent",
+            "Winner: Opponent",
+        ]
+        self.assertEqual(
+            combine_duplicate_transcript_lines(lines),
+            [
+                "=== Turn 4: Opponent ===",
+                "3x Opponent attacks me with Tentacle",
+                "Jerren, Corrupted Bishop blocks Tentacle",
+                "2x Opponent discards Island",
+                "Winner: Opponent",
+                "Winner: Opponent",
+            ],
+        )
 
     def test_game_selection_modes(self):
         matches = [{"number": number} for number in range(1, 6)]

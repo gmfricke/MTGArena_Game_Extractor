@@ -376,6 +376,37 @@ def compact_counted_name(name: str, count: int) -> str:
     return f"{count}x {name}"
 
 
+def should_combine_transcript_line(line: str) -> bool:
+    """Return true for plain event lines that are safe to collapse when adjacent."""
+    if not line or line.startswith(("=", " ", "Active Effects:", "Game State:")):
+        return False
+    if line.startswith(("Winner:", "Match winner:", "Match result:")):
+        return False
+    return True
+
+
+def combine_duplicate_transcript_lines(lines: list[str]) -> list[str]:
+    """Collapse adjacent identical event lines into a compact 'Nx ...' line."""
+    combined = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        count = 1
+        if should_combine_transcript_line(line):
+            while (
+                index + count < len(lines)
+                and lines[index + count] == line
+                and should_combine_transcript_line(lines[index + count])
+            ):
+                count += 1
+        if count > 1:
+            combined.append(f"{count}x {line}")
+        else:
+            combined.append(line)
+        index += count
+    return combined
+
+
 def modifier_summary_suffix(parts: list[str]) -> str:
     """Render permanent modifiers in one parenthetical board-state suffix."""
     return f" ({'; '.join(parts)})" if parts else ""
@@ -2528,7 +2559,7 @@ def extract_game_plays(
             print()
             print()
         first = False
-        print("\n".join(match["lines"]))
+        print("\n".join(combine_duplicate_transcript_lines(match["lines"])))
 
     if debug_grp_ids:
         print("\nDebug GrpId object windows:", file=sys.stderr)
