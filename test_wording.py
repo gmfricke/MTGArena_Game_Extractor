@@ -10,6 +10,7 @@ from mtga_extract_games import (
     clean_localized_enum_name,
     copied_object_label,
     death_label_or_none,
+    is_hidden_arena_object,
     load_enum_value_names,
     object_pronoun,
     phrase_commander_cast_note,
@@ -30,6 +31,7 @@ from mtga_extract_games import (
     phrase_zone_change,
     resolve_stack_name,
     is_low_fidelity_update_without_turn,
+    should_infer_missing_cast_before_resolve,
     should_emit_resolve_line,
     subject_pronoun,
 )
@@ -221,6 +223,57 @@ class WordingTests(unittest.TestCase):
         )
         self.assertFalse(is_low_fidelity_update_without_turn({"update": "GameStateUpdate_SendHiFi"}))
 
+    def test_missing_cast_inference_only_for_named_card_spells(self):
+        emitted = {12}
+        self.assertTrue(
+            should_infer_missing_cast_before_resolve(
+                "Consuming Corruption",
+                1077,
+                {"type": "GameObjectType_Card"},
+                emitted,
+            )
+        )
+        self.assertFalse(
+            should_infer_missing_cast_before_resolve(
+                "instance 1077",
+                1077,
+                {"type": "GameObjectType_Card"},
+                emitted,
+            )
+        )
+        self.assertFalse(
+            should_infer_missing_cast_before_resolve(
+                "Mesmeric Orb trigger",
+                1078,
+                {"type": "GameObjectType_Ability"},
+                emitted,
+            )
+        )
+        self.assertFalse(
+            should_infer_missing_cast_before_resolve(
+                "A copy of Lightning Bolt",
+                1079,
+                {"type": "GameObjectType_Card", "isCopy": True},
+                emitted,
+            )
+        )
+        self.assertFalse(
+            should_infer_missing_cast_before_resolve(
+                "Temple Garden",
+                1080,
+                {"type": "GameObjectType_Card", "cardTypes": ["CardType_Land"]},
+                emitted,
+            )
+        )
+        self.assertFalse(
+            should_infer_missing_cast_before_resolve(
+                "Heartless Act",
+                12,
+                {"type": "GameObjectType_Card"},
+                emitted,
+            )
+        )
+
     def test_anonymous_resolve_suppression(self):
         self.assertFalse(should_emit_resolve_line("instance 729", 729))
         self.assertTrue(should_emit_resolve_line("Petty Theft", 729))
@@ -249,6 +302,11 @@ class WordingTests(unittest.TestCase):
             1407,
         )
         self.assertIsNone(ability_source_instance_id({"type": "GameObjectType_Card"}))
+
+    def test_hidden_arena_object_detection(self):
+        self.assertTrue(is_hidden_arena_object({"isFacedown": True, "grpId": 3}))
+        self.assertTrue(is_hidden_arena_object({"grpId": 3}))
+        self.assertFalse(is_hidden_arena_object({"grpId": 90933}))
 
     def test_grouped_mill_wording_is_source_aware(self):
         self.assertEqual(

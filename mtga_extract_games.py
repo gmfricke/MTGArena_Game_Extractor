@@ -261,6 +261,24 @@ def should_emit_resolve_line(name: str, instance_id: int) -> bool:
     return name != f"instance {instance_id}"
 
 
+def should_infer_missing_cast_before_resolve(
+    name: str,
+    instance_id: int,
+    obj: dict | None,
+    emitted_cast_instance_ids: set[int],
+) -> bool:
+    """Return true when a named spell resolved but its cast was hidden earlier."""
+    if instance_id in emitted_cast_instance_ids:
+        return False
+    if not obj or obj.get("type") != "GameObjectType_Card":
+        return False
+    if "CardType_Land" in (obj.get("cardTypes") or []):
+        return False
+    if obj.get("isCopy"):
+        return False
+    return should_emit_resolve_line(name, instance_id)
+
+
 def resolve_stack_name(instance_id: int, fallback_name: str, stack_names: dict[int, str]) -> str:
     """Use the original cast name when Arena renames adventure/copy objects."""
     return stack_names.get(instance_id) or fallback_name
@@ -278,6 +296,13 @@ def ability_source_instance_id(obj: dict | None) -> int | None:
     if not obj or obj.get("type") != "GameObjectType_Ability":
         return None
     return obj.get("parentId")
+
+
+def is_hidden_arena_object(obj: dict | None) -> bool:
+    """Return true for Arena placeholder objects whose real card is hidden."""
+    if not obj:
+        return False
+    return bool(obj.get("isFacedown")) or obj.get("grpId") == 3
 
 
 def ability_object_label(source_name: str | None, is_trigger: bool = True) -> str | None:
@@ -396,6 +421,7 @@ def extract_game_plays(
     seen_no_combat_damage = set()
     remembered_object_labels = {}
     stack_display_names = {}
+    emitted_cast_instance_ids = set()
     ability_trigger_ids = set()
     ability_source_names = {}
     pending_stack_casts = {}
@@ -647,6 +673,11 @@ def extract_game_plays(
         obj = objects.get(instance_id, {})
         return obj.get("controllerSeatId") or obj.get("ownerSeatId")
 
+    def object_controller(instance_id):
+        """Return the controller seat for cast/play attribution when known."""
+        obj = objects.get(instance_id, {})
+        return obj.get("controllerSeatId")
+
     def card_name_from_grp(grp_id):
         """Translate an Arena grpId through the SQLite card database mapping."""
         if grp_id is None:
@@ -669,6 +700,11 @@ def extract_game_plays(
 
     def object_label_from_object(obj):
         """Return the best readable label available directly on a game object."""
+        if is_hidden_arena_object(obj):
+            # Effects like Gonti exile cards face down. Arena uses grpId 3 for
+            # these placeholders, which is not a card database id we should
+            # print as though it were a card name.
+            return "a face-down card"
         if obj.get("type") == "GameObjectType_Ability":
             source_name = ability_source_names.get(obj.get("instanceId"))
             source_name = source_name or card_name_from_grp(obj.get("objectSourceGrpId"))
@@ -699,6 +735,11 @@ def extract_game_plays(
             remembered_object_labels[new_id] = remembered_object_labels[orig_id]
         if orig_id in stack_display_names:
             stack_display_names[new_id] = stack_display_names[orig_id]
+        if orig_id in emitted_cast_instance_ids:
+            # Arena may change the stack object's instance id between the
+            # hidden cast and the resolve. Preserve the emitted-cast marker so
+            # the fallback does not narrate the same spell twice.
+            emitted_cast_instance_ids.add(new_id)
 
     def card_label(instance_id, fallback_grp_id=None):
         """Return a readable card label for an instance, falling back to grpId."""
@@ -774,6 +815,8 @@ def extract_game_plays(
     def card_label_for_snapshot(instance_id):
         """Return a snapshot label, preserving hidden cards as unknown."""
         obj = objects.get(instance_id, {})
+        if is_hidden_arena_object(obj):
+            return "unknown card"
         if not obj.get("grpId") and not obj.get("objectSourceGrpId"):
             return "unknown card"
         return card_label(instance_id)
@@ -901,11 +944,34 @@ def extract_game_plays(
         """Emit a delayed speculative cast once Arena confirms it mattered."""
         pending = pending_stack_casts.pop(instance_id, None)
         if pending:
+            emitted_cast_instance_ids.add(instance_id)
             emit(phrase_player_action(pending["owner"], "cast", pending["text"]))
+
+    def infer_missing_cast_for_instance(instance_id):
+        """Emit a cast line for named spells whose CastSpell event was hidden."""
+        obj = objects.get(instance_id)
+        name = card_label(instance_id)
+        if not should_infer_missing_cast_before_resolve(
+            name,
+            instance_id,
+            obj,
+            emitted_cast_instance_ids,
+        ):
+            return
+        # Some effects from face-down exile report the spell's sacrifice,
+        # destroy, or death annotations before the later Resolve annotation.
+        # Emit the missing cast as soon as that spell acts as the affector.
+        actor_seat = object_controller(instance_id) or object_owner(instance_id)
+        if not actor_seat:
+            return
+        actor = owner_label(actor_seat)
+        emitted_cast_instance_ids.add(instance_id)
+        emit(phrase_player_action(actor, "cast", name))
 
     def flush_pending_cast_for_affector(affector_id):
         """Emit delayed source casts before their triggered effects are narrated."""
         flush_pending_stack_cast(affector_id)
+        infer_missing_cast_for_instance(affector_id)
         affector = objects.get(affector_id)
         source_id = ability_source_instance_id(affector)
         if source_id is not None:
@@ -931,6 +997,7 @@ def extract_game_plays(
             # Matching the pending stack spell by source grpId/controller keeps
             # the cast line ahead of the trigger without hard-coding a card.
             flush_pending_stack_cast(pending_id)
+            infer_missing_cast_for_instance(pending_id)
 
     def mill_source_from_affector(affector_id):
         """Return the source card for a milling ability, when Arena exposes it."""
@@ -1013,7 +1080,12 @@ def extract_game_plays(
 
         if category == "PlayLand":
             flush_pending_event_groups()
-            emit(phrase_player_action(owner, "play", name))
+            # Cards cast or played from exile can be owned by one player and
+            # controlled by another. Prefer controller for the actor so Gonti
+            # and similar effects do not attribute stolen-card casts to the
+            # original owner.
+            actor = owner_label(object_controller(iid)) if object_controller(iid) else owner
+            emit(phrase_player_action(actor, "play", name))
         elif category == "CastSpell":
             flush_pending_event_groups()
             pending_stack_casts.pop(iid, None)
@@ -1024,14 +1096,30 @@ def extract_game_plays(
                 if commander_text:
                     suffix = f"{suffix}; {commander_text}"
             cast_text = f"{name}{suffix}"
+            # See PlayLand above: the caster is the current controller, not
+            # necessarily the owner of the source zone or card.
+            owner = owner_label(object_controller(iid)) if object_controller(iid) else owner
             if is_low_fidelity_update_without_turn(gsm):
                 pending_stack_casts[iid] = {"owner": owner, "text": cast_text}
             else:
+                emitted_cast_instance_ids.add(iid)
                 emit(phrase_player_action(owner, "cast", cast_text))
         elif category == "Resolve":
             flush_pending_event_groups()
             name = resolve_stack_name(iid, name, stack_display_names)
             flush_pending_stack_cast(iid)
+            if should_infer_missing_cast_before_resolve(
+                name,
+                iid,
+                objects.get(iid),
+                emitted_cast_instance_ids,
+            ):
+                # Some face-down exile effects reveal the spell only on the
+                # resolving stack object. Emit a conservative cast line here so
+                # named spells do not appear to resolve from nowhere.
+                actor = owner_label(object_controller(iid)) if object_controller(iid) else owner
+                emitted_cast_instance_ids.add(iid)
+                emit(phrase_player_action(actor, "cast", name))
             effect_text = active_effect_for_resolved_permanent(name, owner)
             if effect_text:
                 add_active_effect(("resolved_effect", iid, name), effect_text, source_id=iid)
@@ -1085,6 +1173,7 @@ def extract_game_plays(
             emit(phrase_player_action(owner, "discard", name))
         elif category == "Sacrifice":
             flush_pending_event_groups()
+            flush_pending_cast_for_affector(ann.get("affectorId"))
             emit(phrase_player_action(owner, "sacrifice", name))
             remove_active_effects_for_source(iid)
         elif category == "Mill":
