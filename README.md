@@ -86,7 +86,25 @@ python3 mtga_extract_games.py "$LOG" "$CARDDB" --last 2 --no-resolves > mtga_tra
 Show only one game by number:
 
 ```bash
-python3 mtga_extract_games.py "$LOG" "$CARDDB" --select 3 --no-resolves
+python3 mtga_extract_games.py "$LOG" "$CARDDB" --nth-from-start 3 --no-resolves
+```
+
+Show the next-to-last game:
+
+```bash
+python3 mtga_extract_games.py "$LOG" "$CARDDB" --nth-from-end 2 --no-resolves
+```
+
+Show games 3 through 5:
+
+```bash
+python3 mtga_extract_games.py "$LOG" "$CARDDB" --range 3 5 --no-resolves
+```
+
+Show the current game from its start and then keep watching while Arena is running:
+
+```bash
+python3 mtga_extract_games.py "$LOG" "$CARDDB" --live --no-resolves
 ```
 
 Show the built-in help page:
@@ -134,6 +152,12 @@ Use this for the last three games:
 python3 mtga_extract_games.py "$LOG" "$CARDDB" --last 3 --no-resolves
 ```
 
+Use this for the first three games in the log:
+
+```bash
+python3 mtga_extract_games.py "$LOG" "$CARDDB" --first 3 --no-resolves
+```
+
 Use this to save output to a text file:
 
 ```bash
@@ -144,10 +168,16 @@ The most useful options are:
 
 - `--last 1`: show the most recent game
 - `--last 3`: show the last three games
-- `--select 4`: show only game 4 from the log
+- `--first 3`: show the first three games
+- `--nth-from-start 4`: show only game 4 from the log
+- `--nth-from-end 2`: show the next-to-last game
+- `--range 3 5`: show games 3 through 5
+- `--live`: show the current game from its start, then print new transcript lines as Arena writes them
 - `--no-resolves`: hide routine "resolves" lines
 - `--no-turn-state`: hide board and hand snapshots
 - `--no-progress`: hide the progress bar
+
+`--select 4` still works as an older name for `--nth-from-start 4`.
 
 ## Debugging Choices
 

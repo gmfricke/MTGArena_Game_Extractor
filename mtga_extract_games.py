@@ -114,6 +114,36 @@ def load_enum_value_names(carddb_path: Path, enum_type: str) -> dict[int, str]:
     return mapping
 
 
+def find_last_game_start(player_log: Path) -> tuple[int, int]:
+    """Return the byte offset and game number for the last match in Player.log."""
+    last_start = 0
+    game_count = 0
+    current_match_id = None
+    with player_log.open("rb") as f:
+        while True:
+            offset = f.tell()
+            raw_line = f.readline()
+            if not raw_line:
+                break
+            line = raw_line.decode("utf-8", errors="ignore").strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                root = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            for msg in root.get("greToClientEvent", {}).get("greToClientMessages", []):
+                gsm = msg.get("gameStateMessage")
+                if not gsm:
+                    continue
+                match_id = gsm.get("gameInfo", {}).get("matchID")
+                if match_id and match_id != current_match_id:
+                    current_match_id = match_id
+                    game_count += 1
+                    last_start = offset
+    return last_start, game_count
+
+
 def subject_pronoun(label: str) -> str:
     """Return the narrative subject form for a player label."""
     return "I" if label == "Me" else label
@@ -140,6 +170,40 @@ def state_player_heading(label: str) -> str:
     if label == "Me":
         return "My side"
     return label
+
+
+def select_transcript_matches(
+    matches: list[dict],
+    *,
+    nth_from_start: int | None = None,
+    last_games: int | None = None,
+    first_games: int | None = None,
+    nth_from_end: int | None = None,
+    game_range: tuple[int, int] | None = None,
+) -> tuple[list[dict], str | None]:
+    """Apply CLI game selection rules and return selected matches plus any warning."""
+    if nth_from_start is not None:
+        selected = [match for match in matches if match["number"] == nth_from_start]
+        if not selected:
+            return [], f"No game {nth_from_start}; found {len(matches)} game(s)."
+        return selected, None
+    if nth_from_end is not None:
+        # --nth-from-end counts backward from the end: 1 is the latest game,
+        # 2 is the next-to-last game. It selects one game, unlike --last N.
+        if nth_from_end > len(matches):
+            return [], f"No nth-from-end game {nth_from_end}; found {len(matches)} game(s)."
+        return [matches[-nth_from_end]], None
+    if game_range is not None:
+        start, end = game_range
+        selected = [match for match in matches if start <= match["number"] <= end]
+        if not selected:
+            return [], f"No games in range {start}-{end}; found {len(matches)} game(s)."
+        return selected, None
+    if last_games is not None:
+        return matches[-last_games:], None
+    if first_games is not None:
+        return matches[:first_games], None
+    return matches, None
 
 
 def possessive_pronoun(label: str) -> str:
@@ -187,11 +251,11 @@ def phrase_grouped_deaths(controller_label: str | None, card_name: str, count: i
     if count <= 1:
         return phrase_death(controller_label, card_name)
     if controller_label == "Me":
-        owner = "my"
+        return f"{count} of my {card_name} tokens die"
     elif controller_label == "Opponent":
         owner = "opponent"
     elif controller_label:
-        owner = f"{controller_label}'s"
+        return f"{count} of {controller_label}'s {card_name} tokens die"
     else:
         owner = ""
     prefix = f"{count} {owner} ".strip()
@@ -533,11 +597,15 @@ def extract_game_plays(
     debug_grp_ids: set[int] | None = None,
     debug_choices: bool = False,
     debug_targets: bool = False,
-    select_game: int | None = None,
+    nth_from_start: int | None = None,
     last_games: int | None = None,
+    first_games: int | None = None,
+    nth_from_end: int | None = None,
+    game_range: tuple[int, int] | None = None,
     show_progress: bool | None = None,
     show_resolves: bool = True,
     show_turn_state: bool = True,
+    live: bool = False,
     enum_value_names: dict[str, dict[int, str]] | None = None,
 ) -> None:
     """Extract a readable play transcript from MTGA Player.log."""
@@ -670,6 +738,8 @@ def extract_game_plays(
     def emit(line=""):
         if current_match_lines is not None:
             current_match_lines.append(line)
+            if live:
+                print(line, flush=True)
 
     def mark_postgame_payload(root):
         """Remember postgame account/course blobs that appear after GRE stops."""
@@ -2141,158 +2211,180 @@ def extract_game_plays(
         )
 
     with player_log.open("rb") as f:
-        for raw_line in f:
-            read_bytes += len(raw_line)
-            render_progress()
+        if live:
+            # Live mode starts with the current game, meaning the last match
+            # Arena has started in Player.log, then behaves like tail -f.
+            live_start, live_game_number = find_last_game_start(player_log)
+            f.seek(live_start)
+            read_bytes = live_start
+            current_match_number = max(0, live_game_number - 1)
 
-            line = raw_line.decode("utf-8", errors="ignore")
-            line = line.strip()
-            if not line.startswith("{"):
-                continue
-
-            try:
-                root = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            for msg in root.get("greToClientEvent", {}).get("greToClientMessages", []):
-                gsm = msg.get("gameStateMessage")
-                if not gsm:
-                    continue
-
-                match_id = gsm.get("gameInfo", {}).get("matchID")
-                if match_id and match_id != current_match:
-                    finalize_current_match()
-                    current_match = match_id
-                    current_match_number += 1
-                    current_match_lines = []
-                    current_match_record = {
-                        "number": current_match_number,
-                        "match_id": current_match,
-                        "lines": current_match_lines,
-                        "events": [],
-                        "debug_hits": [],
-                        "debug_seen_objects": set(),
-                        "choice_events": [],
-                        "target_events": [],
-                        "has_result": False,
-                        "saw_postgame_payload": False,
-                        "postgame_hint": None,
-                        "finalized": False,
-                    }
-                    transcript_matches.append(current_match_record)
-                    event_index = 0
-                    current_turn = None
-                    last_game_state_id = None
-                    known_local_seat = None
-                    zones.clear()
-                    objects.clear()
-                    players.clear()
-                    team_to_seats.clear()
-                    seen_combat.clear()
-                    seen_commander_damage.clear()
-                    seen_no_combat_damage.clear()
-                    remembered_object_labels.clear()
-                    stack_display_names.clear()
-                    ability_trigger_ids.clear()
-                    ability_source_names.clear()
-                    pending_stack_casts.clear()
-                    pending_mill_group = None
-                    pending_death_events.clear()
-                    active_effects.clear()
-                    commander_grps_by_seat.clear()
-                    commander_instance_ids.clear()
-                    commander_cast_counts.clear()
-                    commander_damage.clear()
-                    player_counters.clear()
-                    object_counters.clear()
-                    persistent_annotations.clear()
-                    known_targets_by_source.clear()
-                    known_target_names_by_source.clear()
-                    emit(f"===== GAME {current_match_number}: MATCH {current_match} =====")
-
-                game_state_id = gsm.get("gameStateId")
-                if (
-                    game_state_id is not None
-                    and last_game_state_id is not None
-                    and game_state_id < last_game_state_id
-                ):
-                    continue
-                if game_state_id is not None:
-                    last_game_state_id = game_state_id
-
-                update_state(gsm)
-                if known_local_seat is None:
-                    known_local_seat = infer_local_seat()
-
-                turn_info = gsm.get("turnInfo", {})
-                if "turnNumber" in turn_info and turn_info["turnNumber"] != current_turn:
-                    flush_pending_event_groups()
-                    current_turn = turn_info["turnNumber"]
-                    emit("")
-                    emit(
-                        f"=== Turn {current_turn}: "
-                        f"{owner_label(turn_info.get('activePlayer'))} ==="
-                    )
-                    emit_turn_state()
-
-                event_index += 1
-                record_gameplay_event(msg, gsm)
-                emit_continuous_effect_events(gsm)
-                emit_combat_events(gsm)
-
-                for ann in gsm.get("annotations", []):
-                    if debug_annotations:
-                        record_debug(ann)
-
-                    key = annotation_key(ann, gsm, msg)
-                    if key in seen_annotations:
+        try:
+            while True:
+                raw_line = f.readline()
+                if not raw_line:
+                    if live:
+                        time.sleep(0.25)
                         continue
-                    seen_annotations.add(key)
+                    break
 
-                    ann_types = set(ann.get("type") or [])
-                    if "AnnotationType_ObjectIdChanged" in ann_types:
-                        note_object_id_change(ann)
-                    elif "AnnotationType_AbilityInstanceCreated" in ann_types:
-                        # Arena can create a triggered ability before the source
-                        # spell's later Resolve annotation. Emit any delayed
-                        # source cast here so the ability does not appear first.
-                        flush_pending_cast_for_affector(ann.get("affectorId"))
-                        for affected_id in ann.get("affectedIds") or []:
-                            ability_trigger_ids.add(affected_id)
-                            obj = objects.get(affected_id)
-                            if obj:
-                                flush_pending_cast_for_affector(affected_id)
-                                label = object_label_from_object(obj)
-                                if label:
-                                    remembered_object_labels[affected_id] = label
-                                    stack_display_names[affected_id] = label
-                    elif "AnnotationType_ZoneTransfer" in ann_types:
-                        emit_zone_transfer(ann, gsm)
-                    elif "AnnotationType_ModifiedLife" in ann_types:
-                        emit_life_change(ann, gsm)
-                    elif "AnnotationType_ChoiceResult" in ann_types:
-                        emit_choice_result(ann, gsm)
-                    elif "AnnotationType_DamageDealt" in ann_types:
-                        emit_commander_damage(ann, gsm)
-                        emit_infect_damage(ann, gsm)
-                        emit_no_combat_damage(ann, gsm)
-                    elif (
-                        "AnnotationType_CounterAdded" in ann_types
-                        or "AnnotationType_CounterRemoved" in ann_types
+                read_bytes += len(raw_line)
+                render_progress()
+
+                line = raw_line.decode("utf-8", errors="ignore")
+                line = line.strip()
+                if not line.startswith("{"):
+                    continue
+
+                try:
+                    root = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                for msg in root.get("greToClientEvent", {}).get("greToClientMessages", []):
+                    gsm = msg.get("gameStateMessage")
+                    if not gsm:
+                        continue
+
+                    match_id = gsm.get("gameInfo", {}).get("matchID")
+                    if match_id and match_id != current_match:
+                        finalize_current_match()
+                        current_match = match_id
+                        current_match_number += 1
+                        current_match_lines = []
+                        current_match_record = {
+                            "number": current_match_number,
+                            "match_id": current_match,
+                            "lines": current_match_lines,
+                            "events": [],
+                            "debug_hits": [],
+                            "debug_seen_objects": set(),
+                            "choice_events": [],
+                            "target_events": [],
+                            "has_result": False,
+                            "saw_postgame_payload": False,
+                            "postgame_hint": None,
+                            "finalized": False,
+                        }
+                        transcript_matches.append(current_match_record)
+                        event_index = 0
+                        current_turn = None
+                        last_game_state_id = None
+                        known_local_seat = None
+                        zones.clear()
+                        objects.clear()
+                        players.clear()
+                        team_to_seats.clear()
+                        seen_combat.clear()
+                        seen_commander_damage.clear()
+                        seen_no_combat_damage.clear()
+                        remembered_object_labels.clear()
+                        stack_display_names.clear()
+                        ability_trigger_ids.clear()
+                        ability_source_names.clear()
+                        pending_stack_casts.clear()
+                        pending_mill_group = None
+                        pending_death_events.clear()
+                        active_effects.clear()
+                        commander_grps_by_seat.clear()
+                        commander_instance_ids.clear()
+                        commander_cast_counts.clear()
+                        commander_damage.clear()
+                        player_counters.clear()
+                        object_counters.clear()
+                        persistent_annotations.clear()
+                        known_targets_by_source.clear()
+                        known_target_names_by_source.clear()
+                        emit(f"===== GAME {current_match_number}: MATCH {current_match} =====")
+
+                    game_state_id = gsm.get("gameStateId")
+                    if (
+                        game_state_id is not None
+                        and last_game_state_id is not None
+                        and game_state_id < last_game_state_id
                     ):
-                        emit_counter_change(ann, gsm)
+                        continue
+                    if game_state_id is not None:
+                        last_game_state_id = game_state_id
 
-                emit_match_results(gsm)
+                    update_state(gsm)
+                    if known_local_seat is None:
+                        known_local_seat = infer_local_seat()
 
-            if not root.get("greToClientEvent"):
-                mark_postgame_payload(root)
+                    turn_info = gsm.get("turnInfo", {})
+                    if "turnNumber" in turn_info and turn_info["turnNumber"] != current_turn:
+                        flush_pending_event_groups()
+                        current_turn = turn_info["turnNumber"]
+                        emit("")
+                        emit(
+                            f"=== Turn {current_turn}: "
+                            f"{owner_label(turn_info.get('activePlayer'))} ==="
+                        )
+                        emit_turn_state()
+
+                    event_index += 1
+                    record_gameplay_event(msg, gsm)
+                    emit_continuous_effect_events(gsm)
+                    emit_combat_events(gsm)
+
+                    for ann in gsm.get("annotations", []):
+                        if debug_annotations:
+                            record_debug(ann)
+
+                        key = annotation_key(ann, gsm, msg)
+                        if key in seen_annotations:
+                            continue
+                        seen_annotations.add(key)
+
+                        ann_types = set(ann.get("type") or [])
+                        if "AnnotationType_ObjectIdChanged" in ann_types:
+                            note_object_id_change(ann)
+                        elif "AnnotationType_AbilityInstanceCreated" in ann_types:
+                            # Arena can create a triggered ability before the source
+                            # spell's later Resolve annotation. Emit any delayed
+                            # source cast here so the ability does not appear first.
+                            flush_pending_cast_for_affector(ann.get("affectorId"))
+                            for affected_id in ann.get("affectedIds") or []:
+                                ability_trigger_ids.add(affected_id)
+                                obj = objects.get(affected_id)
+                                if obj:
+                                    flush_pending_cast_for_affector(affected_id)
+                                    label = object_label_from_object(obj)
+                                    if label:
+                                        remembered_object_labels[affected_id] = label
+                                        stack_display_names[affected_id] = label
+                        elif "AnnotationType_ZoneTransfer" in ann_types:
+                            emit_zone_transfer(ann, gsm)
+                        elif "AnnotationType_ModifiedLife" in ann_types:
+                            emit_life_change(ann, gsm)
+                        elif "AnnotationType_ChoiceResult" in ann_types:
+                            emit_choice_result(ann, gsm)
+                        elif "AnnotationType_DamageDealt" in ann_types:
+                            emit_commander_damage(ann, gsm)
+                            emit_infect_damage(ann, gsm)
+                            emit_no_combat_damage(ann, gsm)
+                        elif (
+                            "AnnotationType_CounterAdded" in ann_types
+                            or "AnnotationType_CounterRemoved" in ann_types
+                        ):
+                            emit_counter_change(ann, gsm)
+
+                    emit_match_results(gsm)
+
+                if not root.get("greToClientEvent"):
+                    mark_postgame_payload(root)
+        except KeyboardInterrupt:
+            if not live:
+                raise
 
     finalize_current_match()
 
     if show_progress:
         render_progress(force=True)
         print(file=sys.stderr)
+
+    if live:
+        return
 
     if debug_annotations:
         print("\nAnnotation summary:", file=sys.stderr)
@@ -2302,18 +2394,16 @@ def extract_game_plays(
             sample = json.dumps(debug_samples[(types, category)], sort_keys=True)
             print(f"{count:5d} {type_text}{cat_text} sample={sample}", file=sys.stderr)
 
-    selected_matches = transcript_matches
-    if select_game is not None:
-        selected_matches = [
-            match for match in transcript_matches if match["number"] == select_game
-        ]
-        if not selected_matches:
-            print(
-                f"No game {select_game}; found {len(transcript_matches)} game(s).",
-                file=sys.stderr,
-            )
-    elif last_games is not None:
-        selected_matches = transcript_matches[-last_games:]
+    selected_matches, selection_warning = select_transcript_matches(
+        transcript_matches,
+        nth_from_start=nth_from_start,
+        last_games=last_games,
+        first_games=first_games,
+        nth_from_end=nth_from_end,
+        game_range=game_range,
+    )
+    if selection_warning:
+        print(selection_warning, file=sys.stderr)
 
     first = True
     for match in selected_matches:
@@ -2441,10 +2531,19 @@ def main() -> None:
     python3 mtga_extract_games.py "$LOG" "$CARDDB" --last 3 --no-resolves > mtga_transcript.txt
 
   Print only game 4 from the log:
-    python3 mtga_extract_games.py "$LOG" "$CARDDB" --select 4 --no-resolves
+    python3 mtga_extract_games.py "$LOG" "$CARDDB" --nth-from-start 4 --no-resolves
+
+  Print the next-to-last game:
+    python3 mtga_extract_games.py "$LOG" "$CARDDB" --nth-from-end 2 --no-resolves
+
+  Print games 3 through 5:
+    python3 mtga_extract_games.py "$LOG" "$CARDDB" --range 3 5 --no-resolves
 
   Debug where Arena records a card's choices:
     python3 mtga_extract_games.py "$LOG" "$CARDDB" --last 1 --debug-card "Serra's Emissary"
+
+  Watch for new games as Arena writes Player.log:
+    python3 mtga_extract_games.py "$LOG" "$CARDDB" --live --no-resolves
 
 macOS path examples:
   LOG="$HOME/Library/Logs/Wizards Of The Coast/MTGA/Player.log"
@@ -2495,10 +2594,31 @@ No pip install step is required; this script only uses Python's standard library
     )
     selection_group = parser.add_mutually_exclusive_group()
     selection_group.add_argument(
+        "--nth-from-start",
         "--select",
+        dest="select",
         type=int,
         metavar="N",
-        help="output only game N from the log, counting from the start of the file",
+        help="output only game N, counting from the start of the log; --select is an alias",
+    )
+    selection_group.add_argument(
+        "--nth-from-end",
+        type=int,
+        metavar="N",
+        help="output only game N, counting backward from the end; 1 is the latest game",
+    )
+    selection_group.add_argument(
+        "--range",
+        type=int,
+        nargs=2,
+        metavar=("X", "Y"),
+        help="output games X through Y, inclusive, counting from the start of the log",
+    )
+    selection_group.add_argument(
+        "--first",
+        type=int,
+        metavar="N",
+        help="output only the first N games",
     )
     selection_group.add_argument(
         "--last",
@@ -2527,15 +2647,45 @@ No pip install step is required; this script only uses Python's standard library
         action="store_true",
         help="hide board, hand, graveyard, exile, and commander snapshots at turn starts",
     )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="print the current game from its start, then watch Player.log for new lines",
+    )
     args = parser.parse_args()
 
     player_log = args.player_log.expanduser()
     carddb = args.carddb.expanduser()
 
     if args.select is not None and args.select < 1:
-        parser.error("--select must be 1 or greater")
+        parser.error("--nth-from-start must be 1 or greater")
+    if args.nth_from_end is not None and args.nth_from_end < 1:
+        parser.error("--nth-from-end must be 1 or greater")
+    if args.first is not None and args.first < 1:
+        parser.error("--first must be 1 or greater")
     if args.last is not None and args.last < 1:
         parser.error("--last must be 1 or greater")
+    if args.range is not None:
+        range_start, range_end = args.range
+        if range_start < 1 or range_end < 1:
+            parser.error("--range values must be 1 or greater")
+        if range_start > range_end:
+            parser.error("--range X Y requires X to be less than or equal to Y")
+    if args.live:
+        has_selection = any(
+            value is not None
+            for value in (
+                args.select,
+                args.nth_from_end,
+                args.first,
+                args.last,
+                args.range,
+            )
+        )
+        if has_selection:
+            parser.error("--live cannot be combined with game selection options")
+        if args.progress:
+            parser.error("--live cannot be combined with --progress")
 
     grp_to_name = load_grp_id_to_name(carddb)
     enum_value_names = {
@@ -2565,11 +2715,15 @@ No pip install step is required; this script only uses Python's standard library
         debug_grp_ids=debug_grp_ids,
         debug_choices=args.debug_choices,
         debug_targets=args.debug_targets,
-        select_game=args.select,
+        nth_from_start=args.select,
         last_games=args.last,
-        show_progress=True if args.progress else False if args.no_progress else None,
+        first_games=args.first,
+        nth_from_end=args.nth_from_end,
+        game_range=tuple(args.range) if args.range is not None else None,
+        show_progress=False if args.live else True if args.progress else False if args.no_progress else None,
         show_resolves=not args.no_resolves,
         show_turn_state=not args.no_turn_state,
+        live=args.live,
         enum_value_names=enum_value_names,
     )
 

@@ -41,6 +41,7 @@ from mtga_extract_games import (
     modifier_summary_suffix,
     resolve_stack_name,
     scaled_power_toughness_counter,
+    select_transcript_matches,
     is_low_fidelity_update_without_turn,
     should_infer_missing_cast_before_resolve,
     should_emit_resolve_line,
@@ -65,6 +66,33 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(state_zone_label("Player 1", "library"), "Player 1's library")
         self.assertEqual(state_player_heading("Me"), "My side")
         self.assertEqual(state_player_heading("Opponent"), "Opponent")
+
+    def test_game_selection_modes(self):
+        matches = [{"number": number} for number in range(1, 6)]
+        self.assertEqual(
+            [match["number"] for match in select_transcript_matches(matches)[0]],
+            [1, 2, 3, 4, 5],
+        )
+        self.assertEqual(
+            [match["number"] for match in select_transcript_matches(matches, nth_from_start=2)[0]],
+            [2],
+        )
+        self.assertEqual(
+            [match["number"] for match in select_transcript_matches(matches, nth_from_end=2)[0]],
+            [4],
+        )
+        self.assertEqual(
+            [match["number"] for match in select_transcript_matches(matches, first_games=2)[0]],
+            [1, 2],
+        )
+        self.assertEqual(
+            [match["number"] for match in select_transcript_matches(matches, last_games=2)[0]],
+            [4, 5],
+        )
+        self.assertEqual(
+            [match["number"] for match in select_transcript_matches(matches, game_range=(2, 4))[0]],
+            [2, 3, 4],
+        )
 
     def test_me_as_object_becomes_me(self):
         self.assertEqual(object_pronoun("Me"), "me")
@@ -101,6 +129,10 @@ class WordingTests(unittest.TestCase):
             "2 opponent Human tokens die",
         )
         self.assertEqual(phrase_grouped_deaths("Me", "Plant", 1), "My Plant dies")
+        self.assertEqual(
+            phrase_grouped_deaths("Me", "Shadowborn Apostle", 2),
+            "2 of my Shadowborn Apostle tokens die",
+        )
 
     def test_passive_zone_change_wording_examples(self):
         self.assertEqual(
