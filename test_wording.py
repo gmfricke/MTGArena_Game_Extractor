@@ -5,6 +5,7 @@ from pathlib import Path
 
 from mtga_extract_games import (
     active_effect_for_resolved_permanent,
+    ability_source_instance_id,
     ability_object_label,
     clean_localized_enum_name,
     copied_object_label,
@@ -239,6 +240,15 @@ class WordingTests(unittest.TestCase):
     def test_ability_object_wording_uses_source_card(self):
         self.assertEqual(ability_object_label("Mesmeric Orb", True), "Mesmeric Orb trigger")
         self.assertEqual(ability_object_label("Cavern of Souls", False), "Cavern of Souls ability")
+
+    def test_ability_source_instance_id_uses_parent(self):
+        self.assertEqual(
+            ability_source_instance_id(
+                {"type": "GameObjectType_Ability", "parentId": 1407}
+            ),
+            1407,
+        )
+        self.assertIsNone(ability_source_instance_id({"type": "GameObjectType_Card"}))
 
     def test_grouped_mill_wording_is_source_aware(self):
         self.assertEqual(

@@ -273,6 +273,13 @@ def copied_object_label(base_name: str | None, is_copy: bool) -> str | None:
     return base_name
 
 
+def ability_source_instance_id(obj: dict | None) -> int | None:
+    """Return the source permanent/spell instance for an Arena ability object."""
+    if not obj or obj.get("type") != "GameObjectType_Ability":
+        return None
+    return obj.get("parentId")
+
+
 def ability_object_label(source_name: str | None, is_trigger: bool = True) -> str | None:
     """Name stack ability objects from their source card instead of their own grpId."""
     if not source_name:
@@ -896,6 +903,35 @@ def extract_game_plays(
         if pending:
             emit(phrase_player_action(pending["owner"], "cast", pending["text"]))
 
+    def flush_pending_cast_for_affector(affector_id):
+        """Emit delayed source casts before their triggered effects are narrated."""
+        flush_pending_stack_cast(affector_id)
+        affector = objects.get(affector_id)
+        source_id = ability_source_instance_id(affector)
+        if source_id is not None:
+            # Arena can report a spell's cast-trigger effect before the later
+            # Resolve zone transfer. If the source spell was delayed from a
+            # low-fidelity CastSpell update, emit it before narrating the
+            # trigger so the transcript stays chronological.
+            flush_pending_stack_cast(source_id)
+        if not pending_stack_casts or not affector:
+            return
+        source_grp = affector.get("objectSourceGrpId")
+        if source_grp is None:
+            return
+        controller = affector.get("controllerSeatId")
+        for pending_id in list(pending_stack_casts):
+            pending_obj = objects.get(pending_id, {})
+            if pending_obj.get("grpId") != source_grp:
+                continue
+            if controller is not None and pending_obj.get("controllerSeatId") != controller:
+                continue
+            # Some cast-trigger ability objects keep source grpId but their
+            # parent linkage is not reliable across all Send/SendHiFi diffs.
+            # Matching the pending stack spell by source grpId/controller keeps
+            # the cast line ahead of the trigger without hard-coding a card.
+            flush_pending_stack_cast(pending_id)
+
     def mill_source_from_affector(affector_id):
         """Return the source card for a milling ability, when Arena exposes it."""
         if affector_id in ability_source_names:
@@ -1014,7 +1050,7 @@ def extract_game_plays(
                 remembered_object_labels[iid] = copy_name
         elif category in death_categories:
             flush_pending_mill_group()
-            flush_pending_stack_cast(ann.get("affectorId"))
+            flush_pending_cast_for_affector(ann.get("affectorId"))
             controller = object_owner(iid)
             name = death_label_or_none(name, iid)
             if not name:
@@ -1023,7 +1059,7 @@ def extract_game_plays(
             remove_active_effects_for_source(iid)
         elif category in {"Destroy", "DestroyNoRegenerate"}:
             flush_pending_event_groups()
-            flush_pending_stack_cast(ann.get("affectorId"))
+            flush_pending_cast_for_affector(ann.get("affectorId"))
             source = source_label(ann.get("affectorId"))
             if source and ann.get("affectorId") != iid and source != name:
                 emit(phrase_zone_change(source, "destroy", name))
@@ -1032,7 +1068,7 @@ def extract_game_plays(
             remove_active_effects_for_source(iid)
         elif category == "Exile":
             flush_pending_event_groups()
-            flush_pending_stack_cast(ann.get("affectorId"))
+            flush_pending_cast_for_affector(ann.get("affectorId"))
             source = source_label(ann.get("affectorId"))
             if source and ann.get("affectorId") != iid and source != name:
                 emit(phrase_zone_change(source, "exile", name))
@@ -1699,10 +1735,15 @@ def extract_game_plays(
                     if "AnnotationType_ObjectIdChanged" in ann_types:
                         note_object_id_change(ann)
                     elif "AnnotationType_AbilityInstanceCreated" in ann_types:
+                        # Arena can create a triggered ability before the source
+                        # spell's later Resolve annotation. Emit any delayed
+                        # source cast here so the ability does not appear first.
+                        flush_pending_cast_for_affector(ann.get("affectorId"))
                         for affected_id in ann.get("affectedIds") or []:
                             ability_trigger_ids.add(affected_id)
                             obj = objects.get(affected_id)
                             if obj:
+                                flush_pending_cast_for_affector(affected_id)
                                 label = object_label_from_object(obj)
                                 if label:
                                     remembered_object_labels[affected_id] = label
