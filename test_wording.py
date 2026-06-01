@@ -44,6 +44,7 @@ from mtga_extract_games import (
     is_low_fidelity_update_without_turn,
     should_infer_missing_cast_before_resolve,
     should_emit_resolve_line,
+    state_player_heading,
     state_player_label,
     state_zone_label,
     subject_pronoun,
@@ -62,6 +63,8 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(state_zone_label("Me", "board"), "My board")
         self.assertEqual(state_zone_label("Opponent", "hand"), "Opponent's hand")
         self.assertEqual(state_zone_label("Player 1", "library"), "Player 1's library")
+        self.assertEqual(state_player_heading("Me"), "My side")
+        self.assertEqual(state_player_heading("Opponent"), "Opponent")
 
     def test_me_as_object_becomes_me(self):
         self.assertEqual(object_pronoun("Me"), "me")

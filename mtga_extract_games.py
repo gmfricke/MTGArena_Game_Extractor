@@ -135,6 +135,13 @@ def state_zone_label(label: str, zone_name: str) -> str:
     return f"{owner} {zone_name}" if owner else zone_name
 
 
+def state_player_heading(label: str) -> str:
+    """Return a turn-state block heading when grouping zones by player."""
+    if label == "Me":
+        return "My side"
+    return label
+
+
 def possessive_pronoun(label: str) -> str:
     """Return a short possessive phrase for a player label."""
     if label == "Me":
@@ -1063,6 +1070,13 @@ def extract_game_plays(
         modifier_parts.extend(attachment_summary_parts(attachments_for_permanent(instance_id)))
         return f"{base}{modifier_summary_suffix(modifier_parts)}"
 
+    def board_permanent_label(obj):
+        """Return a board label with transient visible state such as summoning sickness."""
+        label = permanent_label_for_snapshot(obj.get("instanceId"))
+        if obj.get("hasSummoningSickness"):
+            label = f"{label} (summoning sick)"
+        return label
+
     def attachments_for_permanent(instance_id):
         """Collect auras/equipment explicitly attached to this permanent."""
         attachment_names_by_kind = defaultdict(list)
@@ -1088,10 +1102,31 @@ def extract_game_plays(
             attachment_names_by_kind[kind].append(name)
         return attachment_names_by_kind
 
-    def battlefield_names(seat):
-        """Collect battlefield card/token names controlled by a seat."""
+    def battlefield_row_for_object(obj):
+        """Classify a permanent into the board row used in turn-state blocks."""
+        card_types = set(obj.get("cardTypes") or [])
+        # Lands get the first row even when a land is temporarily also a
+        # creature, because land count/mana is usually the first board read.
+        if "CardType_Land" in card_types:
+            return "lands"
+        # Do not treat every token-like object as a creature. Arena can expose
+        # copied permanents or Aura-like objects with sparse type data, and
+        # those should not be promoted into the creature row without the enum.
+        if "CardType_Creature" in card_types:
+            return "creatures"
+        if card_types & {"CardType_Artifact", "CardType_Enchantment"}:
+            return "artifacts_enchantments"
+        return "other"
+
+    def battlefield_rows(seat):
+        """Collect battlefield permanents into stable, readable board rows."""
         battlefield_zone_ids = zone_ids_by_type("ZoneType_Battlefield")
-        names = []
+        rows = {
+            "lands": {"untapped": [], "tapped": []},
+            "artifacts_enchantments": {"untapped": [], "tapped": []},
+            "creatures": {"untapped": [], "tapped": []},
+            "other": {"untapped": [], "tapped": []},
+        }
         for obj in objects.values():
             if obj.get("zoneId") not in battlefield_zone_ids:
                 continue
@@ -1099,8 +1134,20 @@ def extract_game_plays(
                 continue
             controller = obj.get("controllerSeatId") or obj.get("ownerSeatId")
             if controller == seat:
-                names.append(permanent_label_for_snapshot(obj.get("instanceId")))
-        return names
+                tapped_key = "tapped" if obj.get("isTapped") else "untapped"
+                rows[battlefield_row_for_object(obj)][tapped_key].append(
+                    board_permanent_label(obj)
+                )
+        return rows
+
+    def board_row_line(label, row):
+        """Render one board row, grouping permanents by tapped state."""
+        parts = []
+        if row["untapped"]:
+            parts.append(f"Untapped: {compact_names(row['untapped'])}")
+        if row["tapped"]:
+            parts.append(f"Tapped: {compact_names(row['tapped'])}")
+        return f"    {label}: {'; '.join(parts) if parts else '(empty)'}"
 
     def zone_names(zone_type, seat=None):
         """Collect card names from zones such as hand, graveyard, exile."""
@@ -1151,54 +1198,8 @@ def extract_game_plays(
         """Print the optional turn-start board and strategic state summary."""
         if not show_turn_state:
             return
-        label_1 = owner_label(1)
-        label_2 = owner_label(2)
-        emit("Board:")
-        emit(
-            f"  {state_zone_label(label_1, 'board')}: "
-            f"{compact_names(battlefield_names(1))}"
-        )
-        emit(
-            f"  {state_zone_label(label_2, 'board')}: "
-            f"{compact_names(battlefield_names(2))}"
-        )
-        emit("Hands:")
-        emit(f"  {state_zone_label(label_1, 'hand')}: {compact_names(hand_names(1))}")
-        emit(f"  {state_zone_label(label_2, 'hand')}: {compact_names(hand_names(2))}")
-        emit("Library:")
-        emit(
-            f"  {phrase_library_count(state_zone_label(label_1, 'library'), library_count(1))}"
-        )
-        emit(
-            f"  {phrase_library_count(state_zone_label(label_2, 'library'), library_count(2))}"
-        )
-        emit("Command:")
-        emit(
-            f"  {state_zone_label(label_1, 'command zone')}: "
-            f"{compact_names(zone_names('ZoneType_Command', 1))}"
-        )
-        emit(
-            f"  {state_zone_label(label_2, 'command zone')}: "
-            f"{compact_names(zone_names('ZoneType_Command', 2))}"
-        )
-        emit("Graveyard:")
-        emit(
-            f"  {state_zone_label(label_1, 'graveyard')}: "
-            f"{compact_names(zone_names('ZoneType_Graveyard', 1))}"
-        )
-        emit(
-            f"  {state_zone_label(label_2, 'graveyard')}: "
-            f"{compact_names(zone_names('ZoneType_Graveyard', 2))}"
-        )
-        emit("Exile:")
-        emit(
-            f"  {state_zone_label(label_1, 'exile')}: "
-            f"{compact_names(zone_names('ZoneType_Exile', 1))}"
-        )
-        emit(
-            f"  {state_zone_label(label_2, 'exile')}: "
-            f"{compact_names(zone_names('ZoneType_Exile', 2))}"
-        )
+        for seat in turn_state_seat_order():
+            emit_player_state(seat, owner_label(seat))
         if active_effects:
             emit("Active Effects:")
             for effect in sorted(active_effects.values(), key=lambda item: item["text"]):
@@ -1208,6 +1209,32 @@ def extract_game_plays(
             emit("Current State:")
             for line in state_lines:
                 emit(f"  {line}")
+
+    def emit_player_state(seat, label):
+        """Print all visible zones for one player in a compact block."""
+        emit(f"{state_player_heading(label)}:")
+        emit("  Board:")
+        emit_board_rows(seat)
+        emit(f"  Hand: {compact_names(hand_names(seat))}")
+        emit(f"  {phrase_library_count('Library', library_count(seat))}")
+        emit(f"  Command: {compact_names(zone_names('ZoneType_Command', seat))}")
+        emit(f"  Graveyard: {compact_names(zone_names('ZoneType_Graveyard', seat))}")
+        emit(f"  Exile: {compact_names(zone_names('ZoneType_Exile', seat))}")
+
+    def emit_board_rows(seat):
+        """Print board rows in the requested land/noncreature/creature order."""
+        rows = battlefield_rows(seat)
+        emit(board_row_line("Lands", rows["lands"]))
+        emit(board_row_line("Artifacts/Enchantments", rows["artifacts_enchantments"]))
+        emit(board_row_line("Creatures", rows["creatures"]))
+        if rows["other"]["untapped"] or rows["other"]["tapped"]:
+            emit(board_row_line("Other", rows["other"]))
+
+    def turn_state_seat_order():
+        """Prefer the user's side first once the local seat is known."""
+        if known_local_seat in (1, 2):
+            return [known_local_seat, 1 if known_local_seat == 2 else 2]
+        return [1, 2]
 
     def strategic_state_lines():
         """Build a concise summary of counters and commander-related state."""
