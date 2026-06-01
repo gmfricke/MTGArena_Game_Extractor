@@ -10,6 +10,7 @@ from mtga_extract_games import (
     ability_object_label,
     attachment_summary_parts,
     append_target_phrase,
+    base_cast_name,
     clean_localized_enum_name,
     compact_counted_name,
     counter_summary_suffix,
@@ -270,6 +271,14 @@ class WordingTests(unittest.TestCase):
             "Giada, Font of Hope; Youthful Valkyrie",
         )
         self.assertEqual(append_target_phrase("Arcane Signet", []), "Arcane Signet")
+        self.assertEqual(
+            base_cast_name("Tamiyo's Safekeeping targeting Ivy, Gleeful Spellthief"),
+            "Tamiyo's Safekeeping",
+        )
+        self.assertEqual(
+            base_cast_name("Ivy, Gleeful Spellthief from command zone; commander cast #1"),
+            "Ivy, Gleeful Spellthief",
+        )
 
     def test_target_debug_path_detection(self):
         self.assertIn(

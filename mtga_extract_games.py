@@ -353,6 +353,15 @@ def append_target_phrase(text: str, target_names: list[str]) -> str:
     return f"{text} targeting {format_target_phrase(target_names)}"
 
 
+def base_cast_name(cast_text: str) -> str:
+    """Strip transcript suffixes so delayed casts can be matched by spell name."""
+    return (
+        cast_text.split(" targeting ", 1)[0]
+        .split(" from command zone", 1)[0]
+        .split(";", 1)[0]
+    )
+
+
 def is_target_like_key(key: str) -> bool:
     """Return true for raw payload keys that are useful for target debugging."""
     key = str(key).lower()
@@ -1288,6 +1297,21 @@ def extract_game_plays(
             flush_pending_stack_cast(pending_id)
             infer_missing_cast_for_instance(pending_id)
 
+    def flush_pending_cast_for_copy_name(name):
+        """Emit a delayed original spell before its copied spell resolves."""
+        matching_ids = [
+            pending_id
+            for pending_id, pending in pending_stack_casts.items()
+            if base_cast_name(pending.get("text", "")) == name
+        ]
+        if len(matching_ids) != 1:
+            return
+        # Arena can report Copy before the original spell's later Resolve.
+        # When exactly one delayed cast has the copied spell's name, emitting it
+        # here keeps "I cast X" ahead of "A copy of X resolves" without guessing
+        # among multiple same-name spells.
+        flush_pending_stack_cast(matching_ids[0])
+
     def mill_source_from_affector(affector_id):
         """Return the source card for a milling ability, when Arena exposes it."""
         if affector_id in ability_source_names:
@@ -1427,6 +1451,7 @@ def extract_game_plays(
                 emit(f"{name} resolves")
         elif category == "Copy":
             flush_pending_event_groups()
+            flush_pending_cast_for_copy_name(name)
             # Jin-Gitaxias and similar effects put a copy on the stack. Track
             # that identity so later effects do not look like the original
             # countered spell still resolved.
