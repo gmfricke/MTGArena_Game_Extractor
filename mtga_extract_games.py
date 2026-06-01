@@ -272,8 +272,22 @@ def scaled_power_toughness_counter(name: str, amount: int) -> str | None:
     return f"{power_sign}{power_total}/{toughness_sign}{toughness_total}"
 
 
-def counter_summary_suffix(counter_totals: Counter, counter_names: dict[int, str]) -> str:
-    """Render object counters as a stable suffix for board-state grouping."""
+def grouped_name_phrase(names: list[str]) -> str:
+    """Render repeated attachment names in the same style as board state."""
+    counts = Counter(name for name in names if name)
+    return ", ".join(
+        f"{count}x {name}" if count > 1 else name
+        for name, count in sorted(counts.items())
+    )
+
+
+def modifier_summary_suffix(parts: list[str]) -> str:
+    """Render permanent modifiers in one parenthetical board-state suffix."""
+    return f" ({'; '.join(parts)})" if parts else ""
+
+
+def counter_summary_parts(counter_totals: Counter, counter_names: dict[int, str]) -> list[str]:
+    """Render object counters as board-state modifier fragments."""
     parts = []
     for raw_type, amount in sorted(counter_totals.items(), key=lambda item: str(item[0])):
         if amount <= 0:
@@ -288,7 +302,26 @@ def counter_summary_suffix(counter_totals: Counter, counter_names: dict[int, str
             parts.append(f"{name}{noun}")
         else:
             parts.append(f"{name}{noun}s: {amount}")
-    return f" ({'; '.join(parts)})" if parts else ""
+    return parts
+
+
+def counter_summary_suffix(counter_totals: Counter, counter_names: dict[int, str]) -> str:
+    """Render object counters as a stable suffix for board-state grouping."""
+    return modifier_summary_suffix(counter_summary_parts(counter_totals, counter_names))
+
+
+def attachment_summary_parts(attachment_names_by_kind: dict[str, list[str]]) -> list[str]:
+    """Render Arena attachment annotations as modified-permanent fragments."""
+    parts = []
+    for kind, verb in (
+        ("aura", "enchanted by"),
+        ("equipment", "equipped with"),
+        ("other", "attached to"),
+    ):
+        phrase = grouped_name_phrase(attachment_names_by_kind.get(kind, []))
+        if phrase:
+            parts.append(f"{verb} {phrase}")
+    return parts
 
 
 def should_emit_resolve_line(name: str, instance_id: int) -> bool:
@@ -469,6 +502,7 @@ def extract_game_plays(
     commander_damage = Counter()
     player_counters = Counter()
     object_counters = defaultdict(Counter)
+    persistent_annotations = {}
     current_match = None
     current_turn = None
     last_game_state_id = None
@@ -882,11 +916,38 @@ def extract_game_plays(
         return "unknown card" if label.startswith("grpId ") else label
 
     def permanent_label_for_snapshot(instance_id):
-        """Return a battlefield label that separates different counter piles."""
+        """Return a battlefield label with counters and known attachments."""
         base = card_label_for_snapshot(instance_id)
         if base == "unknown card":
             return base
-        return f"{base}{counter_summary_suffix(object_counters[instance_id], counter_type_names)}"
+        modifier_parts = counter_summary_parts(object_counters[instance_id], counter_type_names)
+        modifier_parts.extend(attachment_summary_parts(attachments_for_permanent(instance_id)))
+        return f"{base}{modifier_summary_suffix(modifier_parts)}"
+
+    def attachments_for_permanent(instance_id):
+        """Collect auras/equipment explicitly attached to this permanent."""
+        attachment_names_by_kind = defaultdict(list)
+        for ann in persistent_annotations.values():
+            if "AnnotationType_Attachment" not in set(ann.get("type") or []):
+                continue
+            if instance_id not in (ann.get("affectedIds") or []):
+                continue
+            attachment_id = ann.get("affectorId")
+            attachment = objects.get(attachment_id, {})
+            name = card_label_for_snapshot(attachment_id)
+            if not name or name == "unknown card":
+                continue
+            subtypes = set(attachment.get("subtypes") or [])
+            # The annotation tells us the relationship; the subtype tells us
+            # how to word it without guessing from the card name.
+            if "SubType_Aura" in subtypes:
+                kind = "aura"
+            elif "SubType_Equipment" in subtypes:
+                kind = "equipment"
+            else:
+                kind = "other"
+            attachment_names_by_kind[kind].append(name)
+        return attachment_names_by_kind
 
     def battlefield_names(seat):
         """Collect battlefield card/token names controlled by a seat."""
@@ -1628,6 +1689,17 @@ def extract_game_plays(
                     kept_count = hand_count_for_seat(seat) if label == "Me" else None
                     emit(phrase_mulligan(label, kept_count))
 
+        for ann_id in gsm.get("diffDeletedPersistentAnnotationIds") or []:
+            persistent_annotations.pop(ann_id, None)
+
+        for ann in gsm.get("persistentAnnotations") or []:
+            ann_id = ann.get("id")
+            if ann_id is not None:
+                # Arena stores attachments and ongoing effects as persistent
+                # annotations. Keeping them by id lets board-state snapshots
+                # survive later diff messages until Arena deletes them.
+                persistent_annotations[ann_id] = ann
+
         for deleted_id in gsm.get("diffDeletedInstanceIds") or []:
             objects.pop(deleted_id, None)
 
@@ -1857,6 +1929,7 @@ def extract_game_plays(
                     commander_damage.clear()
                     player_counters.clear()
                     object_counters.clear()
+                    persistent_annotations.clear()
                     emit(f"===== GAME {current_match_number}: MATCH {current_match} =====")
 
                 game_state_id = gsm.get("gameStateId")

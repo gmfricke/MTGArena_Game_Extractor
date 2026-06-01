@@ -8,6 +8,7 @@ from mtga_extract_games import (
     active_effect_for_resolved_permanent,
     ability_source_instance_id,
     ability_object_label,
+    attachment_summary_parts,
     clean_localized_enum_name,
     counter_summary_suffix,
     copied_object_label,
@@ -31,6 +32,8 @@ from mtga_extract_games import (
     phrase_player_action,
     phrase_result,
     phrase_zone_change,
+    grouped_name_phrase,
+    modifier_summary_suffix,
     resolve_stack_name,
     scaled_power_toughness_counter,
     is_low_fidelity_update_without_turn,
@@ -211,6 +214,32 @@ class WordingTests(unittest.TestCase):
             " (+2/+2 from counters; counter 7)",
         )
         self.assertEqual(scaled_power_toughness_counter("+1/+1", 38), "+38/+38")
+
+    def test_attachment_summary_wording(self):
+        self.assertEqual(
+            grouped_name_phrase(["Crystal Carapace", "Crystal Carapace"]),
+            "2x Crystal Carapace",
+        )
+        self.assertEqual(
+            attachment_summary_parts(
+                {
+                    "aura": ["Crystal Carapace"],
+                    "equipment": ["Shadowspear"],
+                    "other": ["Cursed Role"],
+                }
+            ),
+            [
+                "enchanted by Crystal Carapace",
+                "equipped with Shadowspear",
+                "attached to Cursed Role",
+            ],
+        )
+        self.assertEqual(
+            modifier_summary_suffix(
+                ["+1/+1 from counters", "enchanted by Crystal Carapace"]
+            ),
+            " (+1/+1 from counters; enchanted by Crystal Carapace)",
+        )
 
     def test_library_count_wording(self):
         self.assertEqual(phrase_library_count("Me", 1), "Me: 1 card")
