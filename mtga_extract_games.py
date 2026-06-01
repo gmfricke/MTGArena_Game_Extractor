@@ -124,6 +124,11 @@ def object_pronoun(label: str) -> str:
     return "me" if label == "Me" else label
 
 
+def state_player_label(label: str) -> str:
+    """Return the compact player label used in board-state summaries."""
+    return "I" if label == "Me" else label
+
+
 def possessive_pronoun(label: str) -> str:
     """Return a short possessive phrase for a player label."""
     if label == "Me":
@@ -895,24 +900,26 @@ def extract_game_plays(
         """Print the optional turn-start board and strategic state summary."""
         if not show_turn_state:
             return
+        label_1 = state_player_label(owner_label(1))
+        label_2 = state_player_label(owner_label(2))
         emit("Board:")
-        emit(f"  {owner_label(1)}: {compact_names(battlefield_names(1))}")
-        emit(f"  {owner_label(2)}: {compact_names(battlefield_names(2))}")
+        emit(f"  {label_1}: {compact_names(battlefield_names(1))}")
+        emit(f"  {label_2}: {compact_names(battlefield_names(2))}")
         emit("Hands:")
-        emit(f"  {owner_label(1)}: {compact_names(hand_names(1))}")
-        emit(f"  {owner_label(2)}: {compact_names(hand_names(2))}")
+        emit(f"  {label_1}: {compact_names(hand_names(1))}")
+        emit(f"  {label_2}: {compact_names(hand_names(2))}")
         emit("Library:")
-        emit(f"  {phrase_library_count(owner_label(1), library_count(1))}")
-        emit(f"  {phrase_library_count(owner_label(2), library_count(2))}")
+        emit(f"  {phrase_library_count(label_1, library_count(1))}")
+        emit(f"  {phrase_library_count(label_2, library_count(2))}")
         emit("Command:")
-        emit(f"  {owner_label(1)}: {compact_names(zone_names('ZoneType_Command', 1))}")
-        emit(f"  {owner_label(2)}: {compact_names(zone_names('ZoneType_Command', 2))}")
+        emit(f"  {label_1}: {compact_names(zone_names('ZoneType_Command', 1))}")
+        emit(f"  {label_2}: {compact_names(zone_names('ZoneType_Command', 2))}")
         emit("Graveyard:")
-        emit(f"  {owner_label(1)}: {compact_names(zone_names('ZoneType_Graveyard', 1))}")
-        emit(f"  {owner_label(2)}: {compact_names(zone_names('ZoneType_Graveyard', 2))}")
+        emit(f"  {label_1}: {compact_names(zone_names('ZoneType_Graveyard', 1))}")
+        emit(f"  {label_2}: {compact_names(zone_names('ZoneType_Graveyard', 2))}")
         emit("Exile:")
-        emit(f"  {owner_label(1)}: {compact_names(zone_names('ZoneType_Exile', 1))}")
-        emit(f"  {owner_label(2)}: {compact_names(zone_names('ZoneType_Exile', 2))}")
+        emit(f"  {label_1}: {compact_names(zone_names('ZoneType_Exile', 1))}")
+        emit(f"  {label_2}: {compact_names(zone_names('ZoneType_Exile', 2))}")
         if active_effects:
             emit("Active Effects:")
             for effect in sorted(active_effects.values(), key=lambda item: item["text"]):

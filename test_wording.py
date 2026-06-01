@@ -33,12 +33,14 @@ from mtga_extract_games import (
     is_low_fidelity_update_without_turn,
     should_infer_missing_cast_before_resolve,
     should_emit_resolve_line,
+    state_player_label,
     subject_pronoun,
 )
 
 
 class WordingTests(unittest.TestCase):
     def test_me_as_subject_becomes_i(self):
+        self.assertEqual(state_player_label("Me"), "I")
         self.assertEqual(
             phrase_player_action("Me", "cast", "Giada, Font of Hope"),
             "I cast Giada, Font of Hope",
