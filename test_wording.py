@@ -40,6 +40,7 @@ from mtga_extract_games import (
     should_infer_missing_cast_before_resolve,
     should_emit_resolve_line,
     state_player_label,
+    state_zone_label,
     subject_pronoun,
 )
 
@@ -51,6 +52,11 @@ class WordingTests(unittest.TestCase):
             phrase_player_action("Me", "cast", "Giada, Font of Hope"),
             "I cast Giada, Font of Hope",
         )
+
+    def test_turn_state_uses_possessive_labels(self):
+        self.assertEqual(state_zone_label("Me", "board"), "My board")
+        self.assertEqual(state_zone_label("Opponent", "hand"), "Opponent's hand")
+        self.assertEqual(state_zone_label("Player 1", "library"), "Player 1's library")
 
     def test_me_as_object_becomes_me(self):
         self.assertEqual(object_pronoun("Me"), "me")
