@@ -24,6 +24,7 @@ from mtga_extract_games import (
     phrase_concede_result,
     phrase_choice_value,
     phrase_death,
+    phrase_enters_attacking,
     phrase_grouped_deaths,
     phrase_incomplete_game_notice,
     phrase_life_change,
@@ -132,6 +133,19 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(
             phrase_grouped_deaths("Me", "Shadowborn Apostle", 2),
             "2 of my Shadowborn Apostle tokens die",
+        )
+
+    def test_enters_attacking_wording(self):
+        self.assertEqual(
+            phrase_enters_attacking(
+                "Raph & Mikey, Troublemakers trigger",
+                "Krang, Utrom Warlord",
+            ),
+            "Raph & Mikey, Troublemakers trigger puts Krang, Utrom Warlord onto the battlefield attacking",
+        )
+        self.assertEqual(
+            phrase_enters_attacking(None, "Robot token"),
+            "Robot token enters the battlefield attacking",
         )
 
     def test_passive_zone_change_wording_examples(self):

@@ -262,6 +262,13 @@ def phrase_grouped_deaths(controller_label: str | None, card_name: str, count: i
     return f"{prefix} {card_name} tokens die"
 
 
+def phrase_enters_attacking(source: str | None, creature: str) -> str:
+    """Render a creature/token entering already attacking without inventing a source."""
+    if source:
+        return f"{source} puts {creature} onto the battlefield attacking"
+    return f"{creature} enters the battlefield attacking"
+
+
 def phrase_zone_change(source: str | None, verb: str, target: str) -> str:
     """Render destroy/exile/counter events with source attribution if known."""
     passive = {
@@ -597,6 +604,7 @@ def extract_game_plays(
     debug_grp_ids: set[int] | None = None,
     debug_choices: bool = False,
     debug_targets: bool = False,
+    debug_triggers: bool = False,
     nth_from_start: int | None = None,
     last_games: int | None = None,
     first_games: int | None = None,
@@ -622,6 +630,7 @@ def extract_game_plays(
     seen_state_events = set()
     seen_commander_damage = set()
     seen_no_combat_damage = set()
+    seen_enters_attacking = set()
     remembered_object_labels = {}
     stack_display_names = {}
     emitted_cast_instance_ids = set()
@@ -816,6 +825,53 @@ def extract_game_plays(
     def detail_dict(details):
         """Convert Arena annotation details into a plain dict for easier parsing."""
         return {d.get("key"): detail_value(d) for d in details or []}
+
+    def compact_annotation(ann):
+        """Keep debug trigger output readable by printing only the useful annotation fields."""
+        return {
+            "type": ann.get("type"),
+            "affectorId": ann.get("affectorId"),
+            "affectorName": source_label(ann.get("affectorId")),
+            "affectedIds": ann.get("affectedIds") or [],
+            "affectedNames": [card_label(iid) for iid in ann.get("affectedIds") or []],
+            "details": detail_dict(ann.get("details")),
+        }
+
+    def trigger_debug_annotations(gsm):
+        """Collect compact snippets for ability/trigger-like gameplay annotations."""
+        snippets = []
+        for ann in gsm.get("annotations") or []:
+            ann_types = set(ann.get("type") or [])
+            details = detail_dict(ann.get("details"))
+            affector = ann.get("affectorId")
+            affected = ann.get("affectedIds") or []
+            affector_obj = objects.get(affector) or {}
+            source = source_label(affector)
+            affected_attacking = any(
+                (objects.get(iid) or {}).get("attackState") == "AttackState_Attacking"
+                for iid in affected
+            )
+
+            include = False
+            if "AnnotationType_AbilityInstanceCreated" in ann_types:
+                # Arena creates ability instances for routine mana abilities.
+                # Keep debug output focused on non-land sources and combat
+                # triggers, which are the interesting discovery path here.
+                include = "CardType_Land" not in set(affector_obj.get("cardTypes") or [])
+            elif "AnnotationType_ZoneTransfer" in ann_types:
+                include = affected_attacking or (
+                    source
+                    and source.endswith(" trigger")
+                    and details.get("category") not in {"CastSpell", "PlayLand"}
+                )
+            elif "AnnotationType_ModifiedLife" in ann_types:
+                include = bool(source and source.endswith(" trigger"))
+            elif "AnnotationType_LayeredEffectCreated" in ann_types:
+                include = affected_attacking
+
+            if include:
+                snippets.append(compact_annotation(ann))
+        return snippets
 
     def normalize_for_key(value):
         """Create a hashable annotation key component while ignoring volatile fields."""
@@ -1101,6 +1157,26 @@ def extract_game_plays(
     def is_command_zone(zone_id):
         """Return true when a zone id is Arena's shared command zone."""
         return zones.get(zone_id, {}).get("type") == "ZoneType_Command"
+
+    def is_battlefield_zone(zone_id):
+        """Return true when a zone id is one of Arena's battlefield zones."""
+        return zones.get(zone_id, {}).get("type") == "ZoneType_Battlefield"
+
+    def object_is_attacking_creature(obj):
+        """Detect current object state for creatures already attacking."""
+        if not obj or obj.get("attackState") != "AttackState_Attacking":
+            return False
+        return "CardType_Creature" in set(obj.get("cardTypes") or [])
+
+    def action_activates_source(gsm, source_id):
+        """Return true when the same GRE update shows a player activating this source."""
+        for action_wrapper in gsm.get("actions") or []:
+            action = action_wrapper.get("action") or {}
+            if action.get("instanceId") != source_id:
+                continue
+            if str(action.get("actionType") or "").startswith("ActionType_Activate"):
+                return True
+        return False
 
     def zone_ids_by_type(zone_type):
         """Collect current zone ids of a given Arena zone type."""
@@ -1618,7 +1694,12 @@ def extract_game_plays(
         seen_life_changes.add(key)
 
         total = players.get(seat, {}).get("lifeTotal")
-        emit(phrase_life_change(owner_label(seat), delta, total))
+        line = phrase_life_change(owner_label(seat), delta, total)
+        source = source_label(ann.get("affectorId"))
+        if source and source.endswith(" trigger"):
+            emit(f"{source}: {line}")
+        else:
+            emit(line)
 
     def emit_choice_result(ann, gsm):
         """Emit readable choice-result lines from Arena's numeric choice annotations."""
@@ -1721,6 +1802,29 @@ def extract_game_plays(
                         seen_combat.add(key)
                         flush_pending_event_groups()
                         emit(f"{card_label(iid)} blocks {card_label(attacker_id)}")
+
+    def emit_enters_attacking_events(gsm):
+        """Emit zone-transfer effects that put a creature directly into combat."""
+        if gsm.get("turnInfo", {}).get("phase") != "Phase_Combat":
+            return
+        for ann in gsm.get("annotations") or []:
+            if "AnnotationType_ZoneTransfer" not in set(ann.get("type") or []):
+                continue
+            details = detail_dict(ann.get("details"))
+            if not is_battlefield_zone(details.get("zone_dest")):
+                continue
+            if is_battlefield_zone(details.get("zone_src")):
+                continue
+            for iid in ann.get("affectedIds") or []:
+                obj = objects.get(iid)
+                if not object_is_attacking_creature(obj):
+                    continue
+                key = (current_match, current_turn, gsm.get("gameStateId"), iid)
+                if key in seen_enters_attacking:
+                    continue
+                seen_enters_attacking.add(key)
+                flush_pending_event_groups()
+                emit(phrase_enters_attacking(source_label(ann.get("affectorId")), card_label(iid)))
 
     def emit_continuous_effect_events(gsm):
         """Emit major state-changing continuous effects Arena exposes directly."""
@@ -2185,6 +2289,11 @@ def extract_game_plays(
             event["target_key_paths"] = find_target_like_paths(payload)
             event["target_annotations"] = target_debug_annotations(gsm)
             current_match_record["target_events"].append(event)
+        if debug_triggers:
+            trigger_annotations = trigger_debug_annotations(gsm)
+            if trigger_annotations:
+                event["trigger_annotations"] = trigger_annotations
+                current_match_record["trigger_events"].append(event)
 
     def render_progress(force=False):
         nonlocal last_progress_at
@@ -2261,6 +2370,7 @@ def extract_game_plays(
                             "debug_seen_objects": set(),
                             "choice_events": [],
                             "target_events": [],
+                            "trigger_events": [],
                             "has_result": False,
                             "saw_postgame_payload": False,
                             "postgame_hint": None,
@@ -2278,6 +2388,7 @@ def extract_game_plays(
                         seen_combat.clear()
                         seen_commander_damage.clear()
                         seen_no_combat_damage.clear()
+                        seen_enters_attacking.clear()
                         remembered_object_labels.clear()
                         stack_display_names.clear()
                         ability_trigger_ids.clear()
@@ -2325,6 +2436,7 @@ def extract_game_plays(
                     event_index += 1
                     record_gameplay_event(msg, gsm)
                     emit_continuous_effect_events(gsm)
+                    emit_enters_attacking_events(gsm)
                     emit_combat_events(gsm)
 
                     for ann in gsm.get("annotations", []):
@@ -2344,8 +2456,13 @@ def extract_game_plays(
                             # spell's later Resolve annotation. Emit any delayed
                             # source cast here so the ability does not appear first.
                             flush_pending_cast_for_affector(ann.get("affectorId"))
+                            is_triggered_ability = not action_activates_source(
+                                gsm,
+                                ann.get("affectorId"),
+                            )
                             for affected_id in ann.get("affectedIds") or []:
-                                ability_trigger_ids.add(affected_id)
+                                if is_triggered_ability:
+                                    ability_trigger_ids.add(affected_id)
                                 obj = objects.get(affected_id)
                                 if obj:
                                     flush_pending_cast_for_affector(affected_id)
@@ -2514,6 +2631,27 @@ def extract_game_plays(
                     file=sys.stderr,
                 )
 
+    if debug_triggers:
+        print("\nDebug trigger-like GRE/gameState events:", file=sys.stderr)
+        for match in selected_matches:
+            print(
+                f"\n===== TRIGGERS GAME {match['number']}: MATCH {match['match_id']} =====",
+                file=sys.stderr,
+            )
+            if not match["trigger_events"]:
+                print("No trigger-like payloads found.", file=sys.stderr)
+                continue
+            for event in match["trigger_events"]:
+                print(
+                    f"\n### event {event['event_index']} "
+                    f"turn={event['turn']} gameStateId={event['gameStateId']}",
+                    file=sys.stderr,
+                )
+                print(
+                    json.dumps(event.get("trigger_annotations", []), indent=2, sort_keys=True),
+                    file=sys.stderr,
+                )
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -2591,6 +2729,11 @@ No pip install step is required; this script only uses Python's standard library
         "--debug-targets",
         action="store_true",
         help="advanced: print game events containing likely spell/ability target fields",
+    )
+    parser.add_argument(
+        "--debug-triggers",
+        action="store_true",
+        help="advanced: print compact snippets for trigger-like gameplay events",
     )
     selection_group = parser.add_mutually_exclusive_group()
     selection_group.add_argument(
@@ -2715,6 +2858,7 @@ No pip install step is required; this script only uses Python's standard library
         debug_grp_ids=debug_grp_ids,
         debug_choices=args.debug_choices,
         debug_targets=args.debug_targets,
+        debug_triggers=args.debug_triggers,
         nth_from_start=args.select,
         last_games=args.last,
         first_games=args.first,

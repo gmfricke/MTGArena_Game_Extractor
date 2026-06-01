@@ -201,7 +201,13 @@ To look for events that may contain choices or selections:
 python3 mtga_extract_games.py "$LOG" "$CARDDB" --last 1 --debug-choices
 ```
 
-This is meant to help find where Arena records choices like creature type, protection type, modal choices, or similar decisions.
+To look for trigger-like events, including creatures entering the battlefield attacking:
+
+```bash
+python3 mtga_extract_games.py "$LOG" "$CARDDB" --last 1 --debug-triggers
+```
+
+This is meant to help find where Arena records choices like creature type, protection type, modal choices, triggered abilities, or similar decisions.
 
 ## Fair Use And Intent
 
