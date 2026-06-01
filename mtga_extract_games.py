@@ -468,6 +468,7 @@ def extract_game_plays(
         4: "card type",
         5: "creature type",
         6: "color",
+        14: "mana value parity",
     }
     enum_value_names = enum_value_names or {}
     subtype_names = enum_value_names.get("SubType") or {}
@@ -479,6 +480,7 @@ def extract_game_plays(
         # Creature type values are Arena SubType enum values when the card DB
         # exposes them, so Cavern value 25 comes from SubType 25 -> Elemental.
         # Nyx Lotus / Nykthos: domain 6, value 1 -> White.
+        # Extinction Event: domain 14, value 0 -> even.
         4: {
             1: "Artifact",
             2: "Creature",
@@ -497,6 +499,10 @@ def extract_game_plays(
             4: "Red",
             5: "Green",
             6: "Colorless",
+        },
+        14: {
+            0: "even",
+            1: "odd",
         },
     }
     player_counter_names = {

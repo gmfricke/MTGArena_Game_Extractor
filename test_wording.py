@@ -127,6 +127,7 @@ class WordingTests(unittest.TestCase):
         )
         self.assertEqual(phrase_choice_value("creature type", 1, "Angel"), "Angel")
         self.assertEqual(phrase_choice_value("creature type", 25, "Elemental"), "Elemental")
+        self.assertEqual(phrase_choice_value("mana value parity", 0, "even"), "even")
 
     def test_incomplete_game_notice_is_conservative(self):
         self.assertEqual(
