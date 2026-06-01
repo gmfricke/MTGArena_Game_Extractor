@@ -11,6 +11,7 @@ from mtga_extract_games import (
     attachment_summary_parts,
     append_target_phrase,
     clean_localized_enum_name,
+    compact_counted_name,
     counter_summary_suffix,
     copied_object_label,
     death_label_or_none,
@@ -249,6 +250,15 @@ class WordingTests(unittest.TestCase):
             ),
             " (+1/+1 from counters; enchanted by Crystal Carapace)",
         )
+
+    def test_repeated_hidden_card_wording(self):
+        self.assertEqual(compact_counted_name("unknown card", 1), "unknown card")
+        self.assertEqual(compact_counted_name("unknown card", 7), "7 unknown cards")
+        self.assertEqual(
+            compact_counted_name("a face-down card", 2),
+            "2 face-down cards",
+        )
+        self.assertEqual(compact_counted_name("Island", 2), "2x Island")
 
     def test_target_phrase_wording(self):
         self.assertEqual(

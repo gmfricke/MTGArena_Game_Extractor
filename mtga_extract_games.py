@@ -287,6 +287,17 @@ def grouped_name_phrase(names: list[str]) -> str:
     )
 
 
+def compact_counted_name(name: str, count: int) -> str:
+    """Render repeated board/zone names, pluralizing hidden-card labels."""
+    if count <= 1:
+        return name
+    if name == "unknown card":
+        return f"{count} unknown cards"
+    if name == "a face-down card":
+        return f"{count} face-down cards"
+    return f"{count}x {name}"
+
+
 def modifier_summary_suffix(parts: list[str]) -> str:
     """Render permanent modifiers in one parenthetical board-state suffix."""
     return f" ({'; '.join(parts)})" if parts else ""
@@ -1021,7 +1032,7 @@ def extract_game_plays(
         parts = []
         for name in sorted(counts):
             count = counts[name]
-            parts.append(f"{count}x {name}" if count > 1 else name)
+            parts.append(compact_counted_name(name, count))
         return "; ".join(parts)
 
     def card_label_for_snapshot(instance_id):
