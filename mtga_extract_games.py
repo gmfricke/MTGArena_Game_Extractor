@@ -5,7 +5,7 @@ import re
 import sqlite3
 import sys
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 
@@ -261,6 +261,36 @@ def phrase_player_has_counter(label: str, counter_name: str, amount: int) -> str
     )
 
 
+def scaled_power_toughness_counter(name: str, amount: int) -> str | None:
+    """Render repeated +1/+1 style counters as their total P/T modifier."""
+    match = re.fullmatch(r"([+-])(\d+)/([+-])(\d+)", name)
+    if not match:
+        return None
+    power_sign, power, toughness_sign, toughness = match.groups()
+    power_total = int(power) * amount
+    toughness_total = int(toughness) * amount
+    return f"{power_sign}{power_total}/{toughness_sign}{toughness_total}"
+
+
+def counter_summary_suffix(counter_totals: Counter, counter_names: dict[int, str]) -> str:
+    """Render object counters as a stable suffix for board-state grouping."""
+    parts = []
+    for raw_type, amount in sorted(counter_totals.items(), key=lambda item: str(item[0])):
+        if amount <= 0:
+            continue
+        name = counter_names.get(raw_type, f"counter {raw_type}")
+        scaled = scaled_power_toughness_counter(name, amount)
+        if scaled:
+            parts.append(scaled)
+            continue
+        noun = "" if name.startswith("counter ") else " counter"
+        if amount == 1:
+            parts.append(f"{name}{noun}")
+        else:
+            parts.append(f"{name}{noun}s: {amount}")
+    return f" ({'; '.join(parts)})" if parts else ""
+
+
 def should_emit_resolve_line(name: str, instance_id: int) -> bool:
     """Return false for anonymous stack resolves that would leak raw ids."""
     return name != f"instance {instance_id}"
@@ -438,6 +468,7 @@ def extract_game_plays(
     commander_cast_counts = Counter()
     commander_damage = Counter()
     player_counters = Counter()
+    object_counters = defaultdict(Counter)
     current_match = None
     current_turn = None
     last_game_state_id = None
@@ -477,6 +508,7 @@ def extract_game_plays(
     }
     enum_value_names = enum_value_names or {}
     subtype_names = enum_value_names.get("SubType") or {}
+    counter_type_names = enum_value_names.get("CounterType") or {}
     choice_value_names = {
         # Observed in current GRE logs:
         # Serra's Emissary: domain 4, value 2 -> Creature.
@@ -751,6 +783,10 @@ def extract_game_plays(
             # Resolve, and Arena may change the stack object's id in between.
             # Move the pending cast to the new id so it is not lost.
             pending_stack_casts[new_id] = pending_stack_casts.pop(orig_id)
+        if orig_id in object_counters:
+            # Counter annotations are tied to instance ids. Carry them across
+            # object id changes so board-state grouping remains accurate.
+            object_counters[new_id].update(object_counters.pop(orig_id))
         if orig_id in emitted_cast_instance_ids:
             # Arena may change the stack object's instance id between the
             # hidden cast and the resolve. Preserve the emitted-cast marker so
@@ -835,7 +871,15 @@ def extract_game_plays(
             return "unknown card"
         if not obj.get("grpId") and not obj.get("objectSourceGrpId"):
             return "unknown card"
-        return card_label(instance_id)
+        label = card_label(instance_id)
+        return "unknown card" if label.startswith("grpId ") else label
+
+    def permanent_label_for_snapshot(instance_id):
+        """Return a battlefield label that separates different counter piles."""
+        base = card_label_for_snapshot(instance_id)
+        if base == "unknown card":
+            return base
+        return f"{base}{counter_summary_suffix(object_counters[instance_id], counter_type_names)}"
 
     def battlefield_names(seat):
         """Collect battlefield card/token names controlled by a seat."""
@@ -848,7 +892,7 @@ def extract_game_plays(
                 continue
             controller = obj.get("controllerSeatId") or obj.get("ownerSeatId")
             if controller == seat:
-                names.append(card_label_for_snapshot(obj.get("instanceId")))
+                names.append(permanent_label_for_snapshot(obj.get("instanceId")))
         return names
 
     def zone_names(zone_type, seat=None):
@@ -1501,29 +1545,37 @@ def extract_game_plays(
             f"from {source} ({total} total)"
         )
 
-    def emit_player_counter_change(ann, gsm):
-        """Track player counters if future Arena logs expose known counter types."""
+    def emit_counter_change(ann, gsm):
+        """Track counters on players and object instances for state summaries."""
         details = detail_dict(ann.get("details"))
         affected = ann.get("affectedIds") or []
-        if not affected or affected[0] not in (1, 2):
+        if not affected:
             return
 
         raw_type = details.get("counter_type")
-        counter_name = player_counter_names.get(raw_type)
-        if not counter_name:
-            return
-
         amount = details.get("transaction_amount")
         if not isinstance(amount, int):
             return
         if "AnnotationType_CounterRemoved" in set(ann.get("type") or []):
             amount = -amount
 
-        seat = affected[0]
-        player_counters[(seat, counter_name)] += amount
-        total = player_counters[(seat, counter_name)]
-        flush_pending_event_groups()
-        emit(phrase_player_counter_change(owner_label(seat), counter_name, amount, total))
+        affected_id = affected[0]
+        if affected_id in (1, 2):
+            counter_name = player_counter_names.get(raw_type)
+            if not counter_name:
+                return
+            player_counters[(affected_id, counter_name)] += amount
+            total = player_counters[(affected_id, counter_name)]
+            flush_pending_event_groups()
+            emit(phrase_player_counter_change(owner_label(affected_id), counter_name, amount, total))
+            return
+
+        # Object counters affect battlefield grouping. We do not emit a line for
+        # every +1/+1 counter because those logs are very noisy; the turn-state
+        # board snapshot shows the resulting piles.
+        object_counters[affected_id][raw_type] += amount
+        if object_counters[affected_id][raw_type] <= 0:
+            del object_counters[affected_id][raw_type]
 
     def update_state(gsm):
         """Merge a full/diff game-state message into the local state model."""
@@ -1797,6 +1849,7 @@ def extract_game_plays(
                     commander_cast_counts.clear()
                     commander_damage.clear()
                     player_counters.clear()
+                    object_counters.clear()
                     emit(f"===== GAME {current_match_number}: MATCH {current_match} =====")
 
                 game_state_id = gsm.get("gameStateId")
@@ -1869,7 +1922,7 @@ def extract_game_plays(
                         "AnnotationType_CounterAdded" in ann_types
                         or "AnnotationType_CounterRemoved" in ann_types
                     ):
-                        emit_player_counter_change(ann, gsm)
+                        emit_counter_change(ann, gsm)
 
                 emit_match_results(gsm)
 
@@ -2095,6 +2148,9 @@ No pip install step is required; this script only uses Python's standard library
         # as the card database SubType enum, which keeps this from becoming a
         # handwritten creature-type list.
         "SubType": load_enum_value_names(carddb, "SubType"),
+        # Object counter annotations use CounterType values. Loading this enum
+        # lets board-state snapshots say +1/+1 instead of raw counter ids.
+        "CounterType": load_enum_value_names(carddb, "CounterType"),
     }
     debug_grp_ids = set(args.debug_grpid)
     for card_name in args.debug_card:

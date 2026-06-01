@@ -1,6 +1,7 @@
 import unittest
 import sqlite3
 import tempfile
+from collections import Counter
 from pathlib import Path
 
 from mtga_extract_games import (
@@ -8,6 +9,7 @@ from mtga_extract_games import (
     ability_source_instance_id,
     ability_object_label,
     clean_localized_enum_name,
+    counter_summary_suffix,
     copied_object_label,
     death_label_or_none,
     is_hidden_arena_object,
@@ -30,6 +32,7 @@ from mtga_extract_games import (
     phrase_result,
     phrase_zone_change,
     resolve_stack_name,
+    scaled_power_toughness_counter,
     is_low_fidelity_update_without_turn,
     should_infer_missing_cast_before_resolve,
     should_emit_resolve_line,
@@ -203,6 +206,11 @@ class WordingTests(unittest.TestCase):
             phrase_player_has_counter("Me", "poison", 6),
             "I have 6 poison counters",
         )
+        self.assertEqual(
+            counter_summary_suffix(Counter({1: 2, 7: 1, 9: 0}), {1: "+1/+1"}),
+            " (+2/+2; counter 7)",
+        )
+        self.assertEqual(scaled_power_toughness_counter("+1/+1", 38), "+38/+38")
 
     def test_library_count_wording(self):
         self.assertEqual(phrase_library_count("Me", 1), "Me: 1 card")
