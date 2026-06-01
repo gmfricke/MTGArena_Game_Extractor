@@ -741,6 +741,11 @@ def extract_game_plays(
             remembered_object_labels[new_id] = remembered_object_labels[orig_id]
         if orig_id in stack_display_names:
             stack_display_names[new_id] = stack_display_names[orig_id]
+        if orig_id in pending_stack_casts:
+            # Low-fidelity Send updates can delay a cast line until a later
+            # Resolve, and Arena may change the stack object's id in between.
+            # Move the pending cast to the new id so it is not lost.
+            pending_stack_casts[new_id] = pending_stack_casts.pop(orig_id)
         if orig_id in emitted_cast_instance_ids:
             # Arena may change the stack object's instance id between the
             # hidden cast and the resolve. Preserve the emitted-cast marker so
