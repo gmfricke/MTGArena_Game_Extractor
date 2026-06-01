@@ -281,7 +281,7 @@ def counter_summary_suffix(counter_totals: Counter, counter_names: dict[int, str
         name = counter_names.get(raw_type, f"counter {raw_type}")
         scaled = scaled_power_toughness_counter(name, amount)
         if scaled:
-            parts.append(scaled)
+            parts.append(f"{scaled} from counters")
             continue
         noun = "" if name.startswith("counter ") else " counter"
         if amount == 1:
@@ -504,6 +504,7 @@ def extract_game_plays(
         4: "card type",
         5: "creature type",
         6: "color",
+        11: "permanent type",
         14: "mana value parity",
     }
     enum_value_names = enum_value_names or {}
@@ -536,6 +537,12 @@ def extract_game_plays(
             4: "Red",
             5: "Green",
             6: "Colorless",
+        },
+        # Observed from Elspeth Conquers Death chapter III returning
+        # Snapcaster Mage. This is still deliberately narrow until more
+        # values are seen in real games.
+        11: {
+            1: "creature",
         },
         14: {
             0: "even",

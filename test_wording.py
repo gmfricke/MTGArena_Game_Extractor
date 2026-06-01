@@ -208,7 +208,7 @@ class WordingTests(unittest.TestCase):
         )
         self.assertEqual(
             counter_summary_suffix(Counter({1: 2, 7: 1, 9: 0}), {1: "+1/+1"}),
-            " (+2/+2; counter 7)",
+            " (+2/+2 from counters; counter 7)",
         )
         self.assertEqual(scaled_power_toughness_counter("+1/+1", 38), "+38/+38")
 
