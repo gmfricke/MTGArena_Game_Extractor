@@ -9,6 +9,7 @@ from mtga_extract_games import (
     ability_source_instance_id,
     ability_object_label,
     attachment_summary_parts,
+    append_target_phrase,
     clean_localized_enum_name,
     counter_summary_suffix,
     copied_object_label,
@@ -32,6 +33,8 @@ from mtga_extract_games import (
     phrase_player_action,
     phrase_result,
     phrase_zone_change,
+    find_target_like_paths,
+    format_target_phrase,
     grouped_name_phrase,
     modifier_summary_suffix,
     resolve_stack_name,
@@ -245,6 +248,25 @@ class WordingTests(unittest.TestCase):
                 ["+1/+1 from counters", "enchanted by Crystal Carapace"]
             ),
             " (+1/+1 from counters; enchanted by Crystal Carapace)",
+        )
+
+    def test_target_phrase_wording(self):
+        self.assertEqual(
+            append_target_phrase("Into the Roil", ["K'rrik, Son of Yawgmoth"]),
+            "Into the Roil targeting K'rrik, Son of Yawgmoth",
+        )
+        self.assertEqual(
+            format_target_phrase(["Giada, Font of Hope", "Youthful Valkyrie"]),
+            "Giada, Font of Hope; Youthful Valkyrie",
+        )
+        self.assertEqual(append_target_phrase("Arcane Signet", []), "Arcane Signet")
+
+    def test_target_debug_path_detection(self):
+        self.assertIn(
+            "annotations[0].details[0].targetId",
+            find_target_like_paths(
+                {"annotations": [{"details": [{"targetId": 123}]}]}
+            ),
         )
 
     def test_library_count_wording(self):

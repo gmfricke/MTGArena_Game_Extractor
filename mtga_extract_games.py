@@ -330,6 +330,39 @@ def attachment_summary_parts(attachment_names_by_kind: dict[str, list[str]]) -> 
     return parts
 
 
+def format_target_phrase(target_names: list[str]) -> str:
+    """Render one or more resolved spell targets for a cast line."""
+    return "; ".join(target_names)
+
+
+def append_target_phrase(text: str, target_names: list[str]) -> str:
+    """Append target text to a cast/action phrase when targets are known."""
+    if not target_names:
+        return text
+    return f"{text} targeting {format_target_phrase(target_names)}"
+
+
+def is_target_like_key(key: str) -> bool:
+    """Return true for raw payload keys that are useful for target debugging."""
+    key = str(key).lower()
+    return "target" in key or key in {"affectedids", "affectorid", "objectid", "instanceid"}
+
+
+def find_target_like_paths(payload, path=""):
+    """Find raw JSON key paths that may describe spell or ability targets."""
+    paths = []
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            if is_target_like_key(key):
+                paths.append(child_path)
+            paths.extend(find_target_like_paths(value, child_path))
+    elif isinstance(payload, list):
+        for index, value in enumerate(payload):
+            paths.extend(find_target_like_paths(value, f"{path}[{index}]"))
+    return paths
+
+
 def should_emit_resolve_line(name: str, instance_id: int) -> bool:
     """Return false for anonymous stack resolves that would leak raw ids."""
     return name != f"instance {instance_id}"
@@ -472,6 +505,7 @@ def extract_game_plays(
     debug_annotations: bool = False,
     debug_grp_ids: set[int] | None = None,
     debug_choices: bool = False,
+    debug_targets: bool = False,
     select_game: int | None = None,
     last_games: int | None = None,
     show_progress: bool | None = None,
@@ -509,6 +543,8 @@ def extract_game_plays(
     player_counters = Counter()
     object_counters = defaultdict(Counter)
     persistent_annotations = {}
+    known_targets_by_source = defaultdict(list)
+    known_target_names_by_source = defaultdict(list)
     current_match = None
     current_turn = None
     last_game_state_id = None
@@ -834,6 +870,25 @@ def extract_game_plays(
             # Counter annotations are tied to instance ids. Carry them across
             # object id changes so board-state grouping remains accurate.
             object_counters[new_id].update(object_counters.pop(orig_id))
+        for ann in persistent_annotations.values():
+            # TargetSpec annotations may be created before Arena changes the
+            # stack object's id. Keep both source and target references aligned
+            # so delayed cast lines can still name targets at resolve time.
+            if ann.get("affectorId") == orig_id:
+                ann["affectorId"] = new_id
+            if orig_id in (ann.get("affectedIds") or []):
+                ann["affectedIds"] = [
+                    new_id if affected_id == orig_id else affected_id
+                    for affected_id in ann.get("affectedIds") or []
+                ]
+        if orig_id in known_targets_by_source:
+            known_targets_by_source[new_id].extend(known_targets_by_source.pop(orig_id))
+        if orig_id in known_target_names_by_source:
+            known_target_names_by_source[new_id].extend(known_target_names_by_source.pop(orig_id))
+        for source_id, target_ids in list(known_targets_by_source.items()):
+            known_targets_by_source[source_id] = [
+                new_id if target_id == orig_id else target_id for target_id in target_ids
+            ]
         if orig_id in emitted_cast_instance_ids:
             # Arena may change the stack object's instance id between the
             # hidden cast and the resolve. Preserve the emitted-cast marker so
@@ -855,6 +910,64 @@ def extract_game_plays(
         if target_id in (1, 2):
             return object_pronoun(owner_label(target_id))
         return card_label(target_id)
+
+    def confident_target_name(target_id):
+        """Resolve a target id only when it maps to a readable current object."""
+        if target_id in (1, 2):
+            return object_pronoun(owner_label(target_id))
+        name = card_label(target_id)
+        if name in {"unknown card", "a face-down card", f"instance {target_id}"}:
+            return None
+        if name.startswith("grpId "):
+            return None
+        return name
+
+    def target_ids_for_source(source_id):
+        """Read chosen targets from Arena TargetSpec persistent annotations."""
+        target_ids = []
+        for target_id in known_targets_by_source.get(source_id, []):
+            if target_id != source_id and target_id not in target_ids:
+                target_ids.append(target_id)
+        for ann in persistent_annotations.values():
+            if "AnnotationType_TargetSpec" not in set(ann.get("type") or []):
+                continue
+            if ann.get("affectorId") != source_id:
+                continue
+            # In observed GRE payloads, TargetSpec.affectorId is the spell or
+            # ability object and TargetSpec.affectedIds are the selected
+            # target objects. This is safer than inferring targets from later
+            # destroy/exile/bounce effects.
+            for target_id in ann.get("affectedIds") or []:
+                if target_id != source_id and target_id not in target_ids:
+                    target_ids.append(target_id)
+        return target_ids
+
+    def target_names_for_source(source_id, source_name=None):
+        """Return readable target names for a spell/ability source id."""
+        names = []
+        for name in known_target_names_by_source.get(source_id, []):
+            if name and name not in names:
+                names.append(name)
+        for target_id in target_ids_for_source(source_id):
+            name = confident_target_name(target_id)
+            if name and name not in names:
+                names.append(name)
+        if not names and source_name:
+            matching_sources = [
+                candidate_id
+                for candidate_id, candidate_names in known_target_names_by_source.items()
+                if candidate_names and card_label(candidate_id) == source_name
+            ]
+            if len(matching_sources) == 1:
+                for name in known_target_names_by_source[matching_sources[0]]:
+                    if name and name not in names:
+                        names.append(name)
+        return names
+
+    def cast_text_with_targets(source_id, text):
+        """Append target wording to a cast line when Arena gives targets."""
+        source_name = text.split(" from command zone", 1)[0].split(";", 1)[0]
+        return append_target_phrase(text, target_names_for_source(source_id, source_name))
 
     def source_label(instance_id):
         """Return a source card name only when it is more useful than a raw id."""
@@ -1109,7 +1222,8 @@ def extract_game_plays(
         pending = pending_stack_casts.pop(instance_id, None)
         if pending:
             emitted_cast_instance_ids.add(instance_id)
-            emit(phrase_player_action(pending["owner"], "cast", pending["text"]))
+            text = cast_text_with_targets(pending.get("source_id", instance_id), pending["text"])
+            emit(phrase_player_action(pending["owner"], "cast", text))
 
     def infer_missing_cast_for_instance(instance_id):
         """Emit a cast line for named spells whose CastSpell event was hidden."""
@@ -1259,12 +1373,21 @@ def extract_game_plays(
                 commander_text = note_commander_cast(iid, details.get("grpid"))
                 if commander_text:
                     suffix = f"{suffix}; {commander_text}"
-            cast_text = f"{name}{suffix}"
+            cast_base_text = f"{name}{suffix}"
+            cast_text = cast_text_with_targets(iid, cast_base_text)
             # See PlayLand above: the caster is the current controller, not
             # necessarily the owner of the source zone or card.
             owner = owner_label(object_controller(iid)) if object_controller(iid) else owner
-            if is_low_fidelity_update_without_turn(gsm):
-                pending_stack_casts[iid] = {"owner": owner, "text": cast_text}
+            if is_low_fidelity_update_without_turn(gsm) or cast_text == cast_base_text:
+                # TargetSpec annotations can arrive just after CastSpell in
+                # the same stack sequence. Delay targetless cast lines until
+                # the spell resolves or produces an effect, then re-check
+                # TargetSpec so cards like Fading Hope can name their target.
+                pending_stack_casts[iid] = {
+                    "owner": owner,
+                    "text": cast_base_text,
+                    "source_id": iid,
+                }
             else:
                 emitted_cast_instance_ids.add(iid)
                 emit(phrase_player_action(owner, "cast", cast_text))
@@ -1283,7 +1406,7 @@ def extract_game_plays(
                 # named spells do not appear to resolve from nowhere.
                 actor = owner_label(object_controller(iid)) if object_controller(iid) else owner
                 emitted_cast_instance_ids.add(iid)
-                emit(phrase_player_action(actor, "cast", name))
+                emit(phrase_player_action(actor, "cast", cast_text_with_targets(iid, name)))
             effect_text = active_effect_for_resolved_permanent(name, owner)
             if effect_text:
                 add_active_effect(("resolved_effect", iid, name), effect_text, source_id=iid)
@@ -1733,6 +1856,18 @@ def extract_game_plays(
                 # annotations. Keeping them by id lets board-state snapshots
                 # survive later diff messages until Arena deletes them.
                 persistent_annotations[ann_id] = ann
+            if "AnnotationType_TargetSpec" in set(ann.get("type") or []):
+                source_id = ann.get("affectorId")
+                if source_id is not None:
+                    # TargetSpec can disappear before the later Resolve
+                    # annotation. Remember the selected ids by stack object so
+                    # delayed cast lines can still report them.
+                    for target_id in ann.get("affectedIds") or []:
+                        if target_id != source_id and target_id not in known_targets_by_source[source_id]:
+                            known_targets_by_source[source_id].append(target_id)
+                        name = confident_target_name(target_id)
+                        if name and name not in known_target_names_by_source[source_id]:
+                            known_target_names_by_source[source_id].append(name)
 
         for deleted_id in gsm.get("diffDeletedInstanceIds") or []:
             objects.pop(deleted_id, None)
@@ -1816,6 +1951,46 @@ def extract_game_plays(
             return any(needle in text for needle in needles)
         return False
 
+    def target_debug_annotations(gsm):
+        """Summarize target-related annotations for --debug-targets output."""
+        entries = []
+        for ann in (gsm.get("annotations") or []) + (gsm.get("persistentAnnotations") or []):
+            ann_types = set(ann.get("type") or [])
+            if not any("Target" in ann_type for ann_type in ann_types):
+                continue
+            source_id = ann.get("affectorId")
+            target_ids = list(ann.get("affectedIds") or [])
+            entries.append(
+                {
+                    "annotationId": ann.get("id"),
+                    "types": ann.get("type"),
+                    "sourceId": source_id,
+                    "sourceGrpId": (objects.get(source_id) or {}).get("grpId"),
+                    "sourceName": card_label(source_id) if source_id is not None else None,
+                    "targetIds": target_ids,
+                    "targetNames": [
+                        confident_target_name(target_id) or f"instance {target_id}"
+                        for target_id in target_ids
+                    ],
+                    "details": detail_dict(ann.get("details")),
+                }
+            )
+        return entries
+
+    def contains_target_marker(value):
+        """Detect gameplay payloads worth printing in --debug-targets mode."""
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if "target" in str(key).casefold():
+                    return True
+                if contains_target_marker(item):
+                    return True
+        elif isinstance(value, list):
+            return any(contains_target_marker(item) for item in value)
+        elif isinstance(value, str):
+            return "target" in value.casefold()
+        return False
+
     def object_debug_grp_id(obj):
         """Return a requested debug grpId if this object matches one."""
         for key in ("grpId", "objectSourceGrpId"):
@@ -1873,6 +2048,10 @@ def extract_game_plays(
 
         if debug_choices and contains_choice_marker(payload):
             current_match_record["choice_events"].append(event)
+        if debug_targets and contains_target_marker(payload):
+            event["target_key_paths"] = find_target_like_paths(payload)
+            event["target_annotations"] = target_debug_annotations(gsm)
+            current_match_record["target_events"].append(event)
 
     def render_progress(force=False):
         nonlocal last_progress_at
@@ -1932,6 +2111,7 @@ def extract_game_plays(
                         "debug_hits": [],
                         "debug_seen_objects": set(),
                         "choice_events": [],
+                        "target_events": [],
                         "has_result": False,
                         "saw_postgame_payload": False,
                         "postgame_hint": None,
@@ -1964,6 +2144,8 @@ def extract_game_plays(
                     player_counters.clear()
                     object_counters.clear()
                     persistent_annotations.clear()
+                    known_targets_by_source.clear()
+                    known_target_names_by_source.clear()
                     emit(f"===== GAME {current_match_number}: MATCH {current_match} =====")
 
                 game_state_id = gsm.get("gameStateId")
@@ -2148,6 +2330,37 @@ def extract_game_plays(
                     file=sys.stderr,
                 )
 
+    if debug_targets:
+        print("\nDebug target-like GRE/gameState events:", file=sys.stderr)
+        for match in selected_matches:
+            print(
+                f"\n===== TARGETS GAME {match['number']}: MATCH {match['match_id']} =====",
+                file=sys.stderr,
+            )
+            if not match["target_events"]:
+                print("No target-like payloads found.", file=sys.stderr)
+                continue
+            for event in match["target_events"]:
+                print(
+                    f"\n### event {event['event_index']} "
+                    f"turn={event['turn']} gameStateId={event['gameStateId']}",
+                    file=sys.stderr,
+                )
+                print(
+                    "Target key paths: "
+                    + ", ".join(event.get("target_key_paths", [])[:40]),
+                    file=sys.stderr,
+                )
+                print(
+                    "Target annotations: "
+                    + json.dumps(event.get("target_annotations", []), sort_keys=True),
+                    file=sys.stderr,
+                )
+                print(
+                    json.dumps(event["payload"], indent=2, sort_keys=True),
+                    file=sys.stderr,
+                )
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -2211,6 +2424,11 @@ No pip install step is required; this script only uses Python's standard library
         "--debug-choices",
         action="store_true",
         help="advanced: print game events containing likely choice or selection fields",
+    )
+    parser.add_argument(
+        "--debug-targets",
+        action="store_true",
+        help="advanced: print game events containing likely spell/ability target fields",
     )
     selection_group = parser.add_mutually_exclusive_group()
     selection_group.add_argument(
@@ -2283,6 +2501,7 @@ No pip install step is required; this script only uses Python's standard library
         debug_annotations=args.debug_annotations,
         debug_grp_ids=debug_grp_ids,
         debug_choices=args.debug_choices,
+        debug_targets=args.debug_targets,
         select_game=args.select,
         last_games=args.last,
         show_progress=True if args.progress else False if args.no_progress else None,
