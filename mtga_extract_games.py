@@ -1547,6 +1547,11 @@ def extract_game_plays(
             text = cast_text_with_targets(pending.get("source_id", instance_id), pending["text"])
             emit(phrase_player_action(pending["owner"], "cast", text))
 
+    def flush_all_pending_stack_casts():
+        """Emit delayed cast lines before a game ends without resolving them."""
+        for instance_id in list(pending_stack_casts):
+            flush_pending_stack_cast(instance_id)
+
     def infer_missing_cast_for_instance(instance_id):
         """Emit a cast line for named spells whose CastSpell event was hidden."""
         obj = objects.get(instance_id)
@@ -2257,6 +2262,7 @@ def extract_game_plays(
             reason_text = (reason or result_type or "unknown").replace("ResultReason_", "")
             reason_text = reason_text.replace("ResultType_", "").lower()
             flush_pending_event_groups()
+            flush_all_pending_stack_casts()
             emit("")
             for line in phrase_result(winner, scope_text, reason_text):
                 emit(line)
