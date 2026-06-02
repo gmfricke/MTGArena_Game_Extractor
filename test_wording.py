@@ -1,6 +1,7 @@
 import unittest
 import sqlite3
 import tempfile
+from unittest.mock import patch
 from collections import Counter
 from pathlib import Path
 
@@ -42,6 +43,7 @@ from mtga_extract_games import (
     grouped_name_phrase,
     modifier_summary_suffix,
     resolve_stack_name,
+    resolve_input_paths,
     scaled_power_toughness_counter,
     select_transcript_matches,
     is_low_fidelity_update_without_turn,
@@ -119,6 +121,48 @@ class WordingTests(unittest.TestCase):
             [match["number"] for match in select_transcript_matches(matches, game_range=(2, 4))[0]],
             [2, 3, 4],
         )
+
+    def test_path_resolution_uses_explicit_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            player_log = Path(tmpdir) / "Player.log"
+            carddb = Path(tmpdir) / "Raw_CardDatabase_test.mtga"
+            player_log.write_text("", encoding="utf-8")
+            carddb.write_text("", encoding="utf-8")
+
+            resolved_log, resolved_carddb, warning = resolve_input_paths(player_log, carddb)
+
+            self.assertEqual(resolved_log, player_log)
+            self.assertEqual(resolved_carddb, carddb)
+            self.assertIsNone(warning)
+
+    def test_path_resolution_uses_environment_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            player_log = Path(tmpdir) / "Player.log"
+            carddb = Path(tmpdir) / "Raw_CardDatabase_test.mtga"
+            player_log.write_text("", encoding="utf-8")
+            carddb.write_text("", encoding="utf-8")
+
+            with patch.dict(
+                "os.environ",
+                {"LOG": str(player_log), "CARDDB": str(carddb)},
+                clear=False,
+            ):
+                resolved_log, resolved_carddb, warning = resolve_input_paths(None, None)
+
+            self.assertEqual(resolved_log, player_log)
+            self.assertEqual(resolved_carddb, carddb)
+            self.assertIn("Using Player.log", warning)
+
+    def test_path_resolution_error_explains_setup(self):
+        missing_log = Path("/tmp/definitely-missing-mtga-player-log")
+        missing_carddb = Path("/tmp/definitely-missing-mtga-carddb.mtga")
+        with self.assertRaises(FileNotFoundError) as context:
+            resolve_input_paths(missing_log, missing_carddb)
+
+        message = str(context.exception)
+        self.assertIn("Could not find Player.log", message)
+        self.assertIn("export LOG=", message)
+        self.assertIn("export CARDDB=", message)
 
     def test_me_as_object_becomes_me(self):
         self.assertEqual(object_pronoun("Me"), "me")

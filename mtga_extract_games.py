@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -112,6 +113,103 @@ def load_enum_value_names(carddb_path: Path, enum_type: str) -> dict[int, str]:
             mapping[int(value)] = clean_name
     con.close()
     return mapping
+
+
+def first_existing_path(candidates: list[Path]) -> Path | None:
+    """Return the first candidate path that exists on this machine."""
+    for candidate in candidates:
+        expanded = candidate.expanduser()
+        if expanded.exists():
+            return expanded
+    return None
+
+
+def newest_existing_path(candidates: list[Path]) -> Path | None:
+    """Return the newest existing path from a candidate list."""
+    existing = [candidate.expanduser() for candidate in candidates if candidate.expanduser().exists()]
+    if not existing:
+        return None
+    return max(existing, key=lambda path: path.stat().st_mtime)
+
+
+def env_path(names: list[str]) -> Path | None:
+    """Read the first non-empty environment variable from a list of names."""
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return Path(value).expanduser()
+    return None
+
+
+def likely_player_log_path() -> Path | None:
+    """Find MTG Arena's Player.log in common local locations."""
+    return first_existing_path(
+        [
+            Path("~/Library/Logs/Wizards Of The Coast/MTGA/Player.log"),
+            Path("~/Library/Application Support/com.wizards.mtga/Logs/Player.log"),
+        ]
+    )
+
+
+def likely_carddb_path() -> Path | None:
+    """Find the newest local Arena raw card database in common locations."""
+    candidates = []
+    raw_dirs = [
+        Path("~/Library/Application Support/com.wizards.mtga/Downloads/Raw"),
+    ]
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        raw_dirs.append(Path(local_appdata) / "Packages" / "WizardsOfTheCoast.MTGA_8wekyb3d8bbwe" / "LocalCache" / "Local" / "Temp" / "Wizards Of The Coast" / "MTGA" / "Downloads" / "Raw")
+    for raw_dir in raw_dirs:
+        candidates.extend(raw_dir.expanduser().glob("Raw_CardDatabase_*.mtga"))
+    return newest_existing_path(candidates)
+
+
+def path_setup_instructions(missing: list[str]) -> str:
+    """Build a user-facing setup message when paths cannot be discovered."""
+    missing_text = " and ".join(missing)
+    return f"""Could not find {missing_text}.
+
+You can pass paths directly:
+  python3 mtga_extract_games.py "/path/to/Player.log" "/path/to/Raw_CardDatabase_....mtga" --last 1
+
+Or set environment variables:
+  export LOG="$HOME/Library/Logs/Wizards Of The Coast/MTGA/Player.log"
+  export CARDDB="$HOME/Library/Application Support/com.wizards.mtga/Downloads/Raw/Raw_CardDatabase_....mtga"
+
+On macOS, Player.log is usually here:
+  ~/Library/Logs/Wizards Of The Coast/MTGA/Player.log
+
+The card database is usually the newest Raw_CardDatabase_*.mtga file here:
+  ~/Library/Application Support/com.wizards.mtga/Downloads/Raw/
+"""
+
+
+def resolve_input_paths(player_log_arg: Path | None, carddb_arg: Path | None) -> tuple[Path, Path, str | None]:
+    """Resolve CLI/env/autodiscovered paths and return an optional warning."""
+    player_log = (
+        player_log_arg.expanduser()
+        if player_log_arg
+        else env_path(["LOG", "PLAYER_LOG", "MTGA_PLAYER_LOG"]) or likely_player_log_path()
+    )
+    carddb = (
+        carddb_arg.expanduser()
+        if carddb_arg
+        else env_path(["CARDDB", "MTGA_CARDDB", "MTGA_CARD_DATABASE"]) or likely_carddb_path()
+    )
+
+    missing = []
+    if player_log is None or not player_log.exists():
+        missing.append("Player.log")
+    if carddb is None or not carddb.exists():
+        missing.append("Raw_CardDatabase_*.mtga")
+    if missing:
+        raise FileNotFoundError(path_setup_instructions(missing))
+
+    warning = None
+    if player_log_arg is None or carddb_arg is None:
+        warning = f"Using Player.log: {player_log}\nUsing card database: {carddb}"
+    return player_log, carddb, warning
 
 
 def find_last_game_start(player_log: Path) -> tuple[int, int]:
@@ -2688,48 +2786,53 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Extract readable MTG Arena game transcripts from Player.log. "
-            "The card database argument should point to Arena's local "
-            "Raw_CardDatabase_*.mtga SQLite file."
+            "If paths are not provided, the script checks LOG/CARDDB "
+            "environment variables and common local MTG Arena locations."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""examples:
   Print the most recent game:
-    python3 mtga_extract_games.py "$LOG" "$CARDDB" --last 1 --no-resolves
+    python3 mtga_extract_games.py --last 1 --no-resolves
 
   Save the last three games to a text file:
-    python3 mtga_extract_games.py "$LOG" "$CARDDB" --last 3 --no-resolves > mtga_transcript.txt
+    python3 mtga_extract_games.py --last 3 --no-resolves > mtga_transcript.txt
 
   Print only game 4 from the log:
-    python3 mtga_extract_games.py "$LOG" "$CARDDB" --nth-from-start 4 --no-resolves
+    python3 mtga_extract_games.py --nth-from-start 4 --no-resolves
 
   Print the next-to-last game:
-    python3 mtga_extract_games.py "$LOG" "$CARDDB" --nth-from-end 2 --no-resolves
+    python3 mtga_extract_games.py --nth-from-end 2 --no-resolves
 
   Print games 3 through 5:
-    python3 mtga_extract_games.py "$LOG" "$CARDDB" --range 3 5 --no-resolves
+    python3 mtga_extract_games.py --range 3 5 --no-resolves
 
   Debug where Arena records a card's choices:
-    python3 mtga_extract_games.py "$LOG" "$CARDDB" --last 1 --debug-card "Serra's Emissary"
+    python3 mtga_extract_games.py --last 1 --debug-card "Serra's Emissary"
 
   Watch for new games as Arena writes Player.log:
-    python3 mtga_extract_games.py "$LOG" "$CARDDB" --live --no-resolves
+    python3 mtga_extract_games.py --live --no-resolves
 
 macOS path examples:
   LOG="$HOME/Library/Logs/Wizards Of The Coast/MTGA/Player.log"
   CARDDB="$HOME/Library/Application Support/com.wizards.mtga/Downloads/Raw/Raw_CardDatabase_....mtga"
+
+If paths are not provided, the script checks LOG/CARDDB environment variables,
+then common local MTG Arena locations.
 
 No pip install step is required; this script only uses Python's standard library.
 """,
     )
     parser.add_argument(
         "player_log",
+        nargs="?",
         type=Path,
-        help="path to MTG Arena's Player.log file",
+        help="optional path to MTG Arena's Player.log file",
     )
     parser.add_argument(
         "carddb",
+        nargs="?",
         type=Path,
-        help="path to Raw_CardDatabase_*.mtga from Arena's Downloads/Raw folder",
+        help="optional path to Raw_CardDatabase_*.mtga from Arena's Downloads/Raw folder",
     )
     parser.add_argument(
         "--debug-annotations",
@@ -2828,8 +2931,12 @@ No pip install step is required; this script only uses Python's standard library
     )
     args = parser.parse_args()
 
-    player_log = args.player_log.expanduser()
-    carddb = args.carddb.expanduser()
+    try:
+        player_log, carddb, path_warning = resolve_input_paths(args.player_log, args.carddb)
+    except FileNotFoundError as exc:
+        parser.exit(2, f"{exc}\n")
+    if path_warning:
+        print(path_warning, file=sys.stderr)
 
     if args.select is not None and args.select < 1:
         parser.error("--nth-from-start must be 1 or greater")
