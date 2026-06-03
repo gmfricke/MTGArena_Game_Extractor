@@ -46,6 +46,108 @@ def load_grp_id_to_name(carddb_path: Path) -> dict[int, str]:
     return mapping
 
 
+def parse_carddb_int_list(value: str | None) -> list[int]:
+    """Parse comma/colon encoded integer lists from Arena card database fields."""
+    if not value:
+        return []
+    ids = []
+    for part in re.split(r"[,;]", str(value)):
+        part = part.strip()
+        if not part:
+            continue
+        # AbilityIds are stored as "abilityId:numericAid"; the first number is
+        # the Abilities.Id value that joins to localized rules text.
+        part = part.split(":", 1)[0]
+        try:
+            ids.append(int(part))
+        except ValueError:
+            continue
+    return ids
+
+
+def resource_mechanics_from_text(texts: list[str]) -> list[str]:
+    """Detect explicit self-play mechanics from localized ability text."""
+    found = []
+    haystack = "\n".join(texts).casefold()
+    for mechanic in ("escape", "flashback", "disturb", "aftermath", "adventure"):
+        if mechanic in haystack:
+            found.append(mechanic)
+    return found
+
+
+def resource_mechanics_for_zone(mechanics: list[str], zone_name: str) -> list[str]:
+    """Keep only mechanics that plausibly allow play from a specific zone."""
+    allowed_by_zone = {
+        "graveyard": {"escape", "flashback", "disturb", "aftermath"},
+        "exile": {"adventure"},
+    }
+    allowed = allowed_by_zone.get(zone_name, set())
+    return [mechanic for mechanic in mechanics if mechanic in allowed]
+
+
+def load_grp_id_to_metadata(carddb_path: Path) -> dict[int, dict]:
+    """Load small card metadata needed for conservative resource summaries."""
+    con = sqlite3.connect(carddb_path)
+    cur = con.cursor()
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = {row[0] for row in cur.fetchall()}
+    if not {"Cards", "Localizations_enUS"}.issubset(tables):
+        con.close()
+        return {}
+
+    cur.execute("""
+        SELECT c.GrpId, l.Loc, l.Formatted, c.Types, c.AbilityIds
+        FROM Cards c
+        JOIN Localizations_enUS l
+          ON c.TitleId = l.LocId
+        WHERE l.Formatted IN (0, 1)
+        ORDER BY c.GrpId, l.Formatted
+    """)
+    metadata = {}
+    ability_ids_by_grp = {}
+    for grp_id, name, _formatted, type_text, ability_text in cur.fetchall():
+        grp_id = int(grp_id)
+        if grp_id not in metadata:
+            ability_ids = parse_carddb_int_list(ability_text)
+            metadata[grp_id] = {
+                "name": name,
+                "type_numbers": set(parse_carddb_int_list(type_text)),
+                "ability_texts": [],
+                "play_mechanics": [],
+            }
+            ability_ids_by_grp[grp_id] = ability_ids
+
+    if "Abilities" in tables and ability_ids_by_grp:
+        ability_ids = sorted({aid for aids in ability_ids_by_grp.values() for aid in aids})
+        ability_texts = {}
+        for start in range(0, len(ability_ids), 900):
+            chunk = ability_ids[start : start + 900]
+            placeholders = ",".join("?" for _ in chunk)
+            cur.execute(
+                f"""
+                SELECT a.Id, l.Loc, l.Formatted
+                FROM Abilities a
+                JOIN Localizations_enUS l
+                  ON a.TextId = l.LocId
+                WHERE a.Id IN ({placeholders})
+                  AND l.Formatted IN (0, 1)
+                ORDER BY a.Id, l.Formatted
+                """,
+                chunk,
+            )
+            for ability_id, text, _formatted in cur.fetchall():
+                if text and int(ability_id) not in ability_texts:
+                    ability_texts[int(ability_id)] = text
+
+        for grp_id, aids in ability_ids_by_grp.items():
+            texts = [ability_texts[aid] for aid in aids if aid in ability_texts]
+            metadata[grp_id]["ability_texts"] = texts
+            metadata[grp_id]["play_mechanics"] = resource_mechanics_from_text(texts)
+
+    con.close()
+    return metadata
+
+
 def find_grp_ids_by_card_name(carddb_path: Path, card_name: str) -> dict[int, str]:
     """Find GrpIds whose English card title matches a user supplied name."""
     con = sqlite3.connect(carddb_path)
@@ -151,6 +253,18 @@ def likely_player_log_path() -> Path | None:
     )
 
 
+def player_log_paths_for_reading(player_log: Path, live: bool = False) -> list[Path]:
+    """Return log files to parse, including Arena's rotated previous log."""
+    if live:
+        # Live mode tails the current file, so including Player-prev.log would
+        # print old games before the current one and would not follow new writes.
+        return [player_log]
+    previous_log = player_log.with_name("Player-prev.log")
+    if player_log.name == "Player.log" and previous_log.exists():
+        return [previous_log, player_log]
+    return [player_log]
+
+
 def likely_carddb_path() -> Path | None:
     """Find the newest local Arena raw card database in common locations."""
     candidates = []
@@ -208,7 +322,12 @@ def resolve_input_paths(player_log_arg: Path | None, carddb_arg: Path | None) ->
 
     warning = None
     if player_log_arg is None or carddb_arg is None:
-        warning = f"Using Player.log: {player_log}\nUsing card database: {carddb}"
+        log_lines = [f"Using Player.log: {player_log}"]
+        all_log_paths = player_log_paths_for_reading(player_log)
+        if len(all_log_paths) > 1:
+            log_lines.insert(0, f"Using previous log: {all_log_paths[0]}")
+        log_lines.append(f"Using card database: {carddb}")
+        warning = "\n".join(log_lines)
     return player_log, carddb, warning
 
 
@@ -336,6 +455,35 @@ def phrase_life_change(label: str, delta: int, total=None) -> str:
     return phrase_player_action(label, verb, f"{amount} life{suffix}")
 
 
+def phrase_life_change_group(label: str, delta: int, count: int, total=None) -> str:
+    """Summarize repeated source-less life changes without inventing a source."""
+    if count <= 1:
+        return phrase_life_change(label, delta, total)
+    return f"{count}x {phrase_life_change(label, delta * count, total)}"
+
+
+def phrase_life_change_summary(source: str | None, label: str, delta: int, count: int, total=None) -> str:
+    """Summarize repeated same-source life changes with the final life total."""
+    if not source:
+        return phrase_life_change_group(label, delta, count, total)
+    if count <= 1:
+        return f"{source}: {phrase_life_change(label, delta, total)}"
+    total_delta = delta * count
+    return f"{count}x {source}: {phrase_life_change(label, total_delta, total)}"
+
+
+def should_group_life_change_source(source: str | None) -> bool:
+    """Return true for named ability sources that make repeated life lines readable."""
+    return bool(source and (source.endswith(" trigger") or source.endswith(" ability")))
+
+
+def life_change_group_source(source: str | None) -> str | None:
+    """Normalize known permanent sources when grouping life-change bursts."""
+    if not source or should_group_life_change_source(source):
+        return source
+    return f"{source} ability"
+
+
 def phrase_death(controller_label: str | None, card_name: str) -> str:
     """Render a permanent dying, using possessive attribution when known."""
     possessive = possessive_pronoun(controller_label or "")
@@ -365,6 +513,13 @@ def phrase_enters_attacking(source: str | None, creature: str) -> str:
     if source:
         return f"{source} puts {creature} onto the battlefield attacking"
     return f"{creature} enters the battlefield attacking"
+
+
+def attack_phrase(target: str | None, attacker: str) -> str:
+    """Render attack details without leaking raw ids for unknown targets."""
+    if target:
+        return f"{target} with {attacker}"
+    return f"with {attacker}"
 
 
 def phrase_zone_change(source: str | None, verb: str, target: str) -> str:
@@ -548,6 +703,13 @@ def attachment_summary_parts(attachment_names_by_kind: dict[str, list[str]]) -> 
     return parts
 
 
+def ownership_summary_part(controller_label: str, owner_label_text: str) -> str | None:
+    """Describe controlled-but-not-owned permanents for board snapshots."""
+    if controller_label == owner_label_text:
+        return None
+    return f"owned by {object_pronoun(owner_label_text)}"
+
+
 def format_target_phrase(target_names: list[str]) -> str:
     """Render one or more resolved spell targets for a cast line."""
     return "; ".join(target_names)
@@ -688,6 +850,52 @@ def phrase_library_count(label: str, count: int | None) -> str:
     return f"{label}: {count} card{plural}"
 
 
+def card_has_type(obj: dict | None, metadata: dict | None, arena_type: str, type_number: int) -> bool:
+    """Check a card type using live object enums first, then card DB metadata."""
+    if obj and arena_type in set(obj.get("cardTypes") or []):
+        return True
+    return bool(metadata and type_number in set(metadata.get("type_numbers") or []))
+
+
+def card_is_land(obj: dict | None, metadata: dict | None) -> bool:
+    """Return true when a card is known to be a land."""
+    return card_has_type(obj, metadata, "CardType_Land", 5)
+
+
+def card_is_nonland_permanent(obj: dict | None, metadata: dict | None) -> bool:
+    """Return true for known nonland permanent card types."""
+    permanent_checks = (
+        ("CardType_Artifact", 1),
+        ("CardType_Creature", 2),
+        ("CardType_Enchantment", 3),
+        ("CardType_Planeswalker", 8),
+        ("CardType_Battle", 12),
+    )
+    if card_is_land(obj, metadata):
+        return False
+    return any(card_has_type(obj, metadata, enum_name, number) for enum_name, number in permanent_checks)
+
+
+def available_resource_lines(resources: dict[str, list[str]]) -> list[str]:
+    """Format the optional Available Resources block for a turn-state snapshot."""
+    sections = [
+        ("playable_lands_from_graveyard", "Playable lands from graveyard"),
+        ("conduit_candidates", "Conduit of Worlds candidates"),
+        ("potential_graveyard_exile_plays", "Other playable cards"),
+    ]
+    lines = []
+    for key, title in sections:
+        values = resources.get(key) or []
+        if not values:
+            continue
+        if not lines:
+            lines.append("Available Resources:")
+        lines.append(f"  {title}:")
+        for value in values:
+            lines.append(f"    {value}")
+    return lines
+
+
 def phrase_mulligan(label: str, kept_count: int | None = None) -> str:
     """Render a mulligan without assuming every format reduces hand size."""
     base = f"{subject_pronoun(label)} {present_tense_verb(label, 'mulligan', 'mulligans')}"
@@ -744,6 +952,7 @@ def extract_game_plays(
     show_turn_state: bool = True,
     live: bool = False,
     enum_value_names: dict[str, dict[int, str]] | None = None,
+    card_metadata: dict[int, dict] | None = None,
 ) -> None:
     """Extract a readable play transcript from MTGA Player.log."""
     zones = {}
@@ -767,6 +976,7 @@ def extract_game_plays(
     ability_source_names = {}
     pending_stack_casts = {}
     pending_mill_group = None
+    pending_life_groups = {}
     pending_death_events = []
     active_effects = {}
     commander_grps_by_seat = {}
@@ -791,6 +1001,7 @@ def extract_game_plays(
 
     debug_counts = Counter()
     debug_samples = {}
+    log_paths = player_log_paths_for_reading(player_log, live)
     if show_progress is None:
         show_progress = (
             sys.stderr.isatty()
@@ -798,7 +1009,7 @@ def extract_game_plays(
             and player_log.exists()
             and player_log.stat().st_size >= 10 * 1024 * 1024
         )
-    total_bytes = player_log.stat().st_size if player_log.exists() else 0
+    total_bytes = sum(log_path.stat().st_size for log_path in log_paths if log_path.exists())
     read_bytes = 0
     last_progress_at = 0.0
 
@@ -817,6 +1028,7 @@ def extract_game_plays(
         14: "mana value parity",
     }
     enum_value_names = enum_value_names or {}
+    card_metadata = card_metadata or {}
     subtype_names = enum_value_names.get("SubType") or {}
     counter_type_names = enum_value_names.get("CounterType") or {}
     choice_value_names = {
@@ -1193,6 +1405,20 @@ def extract_game_plays(
             return object_pronoun(owner_label(target_id))
         return card_label(target_id)
 
+    def confident_combat_target_label(target_id):
+        """Return a readable attack target, or None for unidentified objects."""
+        if target_id in (1, 2):
+            return object_pronoun(owner_label(target_id))
+        name = (
+            object_label_from_object(objects.get(target_id, {}))
+            or remembered_object_labels.get(target_id)
+        )
+        if not name or name == f"instance {target_id}" or name.startswith("grpId "):
+            return None
+        if name in {"unknown card", "a face-down card"}:
+            return None
+        return name
+
     def confident_target_name(target_id):
         """Resolve a target id only when it maps to a readable current object."""
         if target_id in (1, 2):
@@ -1255,6 +1481,11 @@ def extract_game_plays(
         """Return a source card name only when it is more useful than a raw id."""
         if instance_id is None:
             return None
+        # AbilityInstanceCreated annotations can name a later ability object even
+        # when the object snapshot is gone by the time ModifiedLife points at it.
+        # Check that remembered label before falling back to "instance N".
+        if instance_id in remembered_object_labels and not objects.get(instance_id):
+            return remembered_object_labels[instance_id]
         obj = objects.get(instance_id, {})
         if obj.get("type") == "GameObjectType_Ability":
             return object_label_from_object(obj) or remembered_object_labels.get(instance_id)
@@ -1336,13 +1567,135 @@ def extract_game_plays(
         label = card_label(instance_id)
         return "unknown card" if label.startswith("grpId ") else label
 
+    def metadata_for_object(obj):
+        """Return card DB metadata for an Arena object when its grpId is known."""
+        grp_id = obj.get("grpId") or obj.get("objectSourceGrpId")
+        try:
+            return card_metadata.get(int(grp_id))
+        except (TypeError, ValueError):
+            return None
+
+    def zone_object_entries(zone_type, seat=None):
+        """Collect visible object records from a zone for resource analysis."""
+        entries = []
+        for zone in zones.values():
+            if zone.get("type") != zone_type:
+                continue
+            zone_owner_id = zone.get("ownerSeatId")
+            if seat is not None and zone_owner_id is not None and zone_owner_id != seat:
+                continue
+            for instance_id in zone.get("objectInstanceIds") or []:
+                if seat is not None and zone_owner_id is None and object_owner(instance_id) != seat:
+                    continue
+                obj = objects.get(instance_id, {})
+                name = card_label_for_snapshot(instance_id)
+                if name in {"unknown card", "a face-down card"}:
+                    continue
+                entries.append(
+                    {
+                        "instance_id": instance_id,
+                        "object": obj,
+                        "name": name,
+                        "metadata": metadata_for_object(obj),
+                    }
+                )
+        return entries
+
+    def controlled_battlefield_names(seat):
+        """Return names of permanents a player currently controls."""
+        names = set()
+        battlefield_zone_ids = zone_ids_by_type("ZoneType_Battlefield")
+        for obj in objects.values():
+            if obj.get("zoneId") not in battlefield_zone_ids:
+                continue
+            controller = obj.get("controllerSeatId") or obj.get("ownerSeatId")
+            if controller != seat:
+                continue
+            name = card_label_for_snapshot(obj.get("instanceId"))
+            if name and name != "unknown card":
+                names.add(name)
+        return names
+
+    def card_resource_name(entry, suffix=None):
+        """Render one available-resource card, optionally with a caveat suffix."""
+        if suffix:
+            return f"{entry['name']} [{suffix}]"
+        return entry["name"]
+
+    def command_zone_names(seat):
+        """List command-zone cards, adding commander tax only when nonzero."""
+        lines = []
+        for entry in zone_object_entries("ZoneType_Command", seat):
+            obj = entry["object"]
+            grp_id = obj.get("grpId") or obj.get("objectSourceGrpId")
+            try:
+                count = commander_cast_counts.get((seat, int(grp_id)), 0)
+            except (TypeError, ValueError):
+                count = 0
+            tax = count * 2
+            if tax:
+                lines.append(f"{entry['name']} [next commander tax +{tax}]")
+            else:
+                lines.append(entry["name"])
+        return sorted(set(lines))
+
+    def available_resources_for_seat(seat):
+        """Find high-confidence cards playable or usable outside the hand."""
+        resources = defaultdict(list)
+        battlefield_names = controlled_battlefield_names(seat)
+        graveyard_entries = zone_object_entries("ZoneType_Graveyard", seat)
+        exile_entries = zone_object_entries("ZoneType_Exile", seat)
+
+        has_crucible = "Crucible of Worlds" in battlefield_names
+        has_conduit = "Conduit of Worlds" in battlefield_names
+        if has_crucible or has_conduit:
+            for entry in graveyard_entries:
+                if card_is_land(entry["object"], entry["metadata"]):
+                    resources["playable_lands_from_graveyard"].append(card_resource_name(entry))
+
+        if has_conduit:
+            for entry in graveyard_entries:
+                if card_is_nonland_permanent(entry["object"], entry["metadata"]):
+                    resources["conduit_candidates"].append(
+                        card_resource_name(entry, "limited by Conduit, timing/cost not checked")
+                    )
+
+        for zone_name, entries in (
+            ("graveyard", graveyard_entries),
+            ("exile", exile_entries),
+        ):
+            for entry in entries:
+                mechanics = resource_mechanics_for_zone(
+                    list((entry["metadata"] or {}).get("play_mechanics") or []),
+                    zone_name,
+                )
+                if not mechanics:
+                    continue
+                resources["potential_graveyard_exile_plays"].append(
+                    card_resource_name(
+                        entry,
+                        f"{', '.join(mechanics)} from {zone_name}, cost not checked",
+                    )
+                )
+
+        return {key: sorted(set(values)) for key, values in resources.items() if values}
+
     def permanent_label_for_snapshot(instance_id):
         """Return a battlefield label with counters and known attachments."""
         base = card_label_for_snapshot(instance_id)
         if base == "unknown card":
             return base
+        obj = objects.get(instance_id, {})
         modifier_parts = counter_summary_parts(object_counters[instance_id], counter_type_names)
         modifier_parts.extend(attachment_summary_parts(attachments_for_permanent(instance_id)))
+        controller = obj.get("controllerSeatId")
+        owner = obj.get("ownerSeatId")
+        if controller is not None and owner is not None:
+            # Control-changing effects keep ownerSeatId and controllerSeatId
+            # separate. Board snapshots should expose that strategic context.
+            ownership_part = ownership_summary_part(owner_label(controller), owner_label(owner))
+            if ownership_part:
+                modifier_parts.append(ownership_part)
         return f"{base}{modifier_summary_suffix(modifier_parts)}"
 
     def board_permanent_label(obj):
@@ -1492,9 +1845,11 @@ def extract_game_plays(
         emit_board_rows(seat)
         emit(f"  Hand: {compact_names(hand_names(seat))}")
         emit(f"  {phrase_library_count('Library', library_count(seat))}")
-        emit(f"  Command: {compact_names(zone_names('ZoneType_Command', seat))}")
+        emit(f"  Command: {compact_names(command_zone_names(seat))}")
         emit(f"  Graveyard: {compact_names(zone_names('ZoneType_Graveyard', seat))}")
         emit(f"  Exile: {compact_names(zone_names('ZoneType_Exile', seat))}")
+        for line in available_resource_lines(available_resources_for_seat(seat)):
+            emit(f"  {line}")
 
     def emit_board_rows(seat):
         """Print board rows in the requested land/noncreature/creature order."""
@@ -1535,7 +1890,7 @@ def extract_game_plays(
                 source = " / ".join(name for name in commander_names if name) or "Commander"
                 lines.append(
                     f"{source} has dealt {amount} commander damage to "
-                    f"{owner_label(target_seat)}"
+                    f"{object_pronoun(owner_label(target_seat))}"
                 )
         return lines
 
@@ -1645,6 +2000,31 @@ def extract_game_plays(
         )
         pending_mill_group = None
 
+    def flush_pending_life_group():
+        """Emit grouped repeated ability life changes with final totals."""
+        nonlocal pending_life_groups
+        if not pending_life_groups:
+            return
+        groups = list(pending_life_groups.values())
+        last_group_index_by_owner = {}
+        for index, group in enumerate(groups):
+            # Interleaved drains can affect the same player from several sources.
+            # Showing a running total on every grouped source line makes the math
+            # look independent, so keep totals only on that player's final line.
+            last_group_index_by_owner[group["owner"]] = index
+        for index, group in enumerate(groups):
+            total = group["total"] if last_group_index_by_owner[group["owner"]] == index else None
+            emit(
+                phrase_life_change_summary(
+                    group["source"],
+                    group["owner"],
+                    group["delta"],
+                    group["count"],
+                    total,
+                )
+            )
+        pending_life_groups = {}
+
     def flush_pending_death_group():
         """Emit a compact line for identical deaths in one contiguous death burst."""
         nonlocal pending_death_events
@@ -1663,6 +2043,7 @@ def extract_game_plays(
     def flush_pending_event_groups():
         """Flush grouped event summaries before emitting an unrelated event."""
         flush_pending_mill_group()
+        flush_pending_life_group()
         flush_pending_death_group()
 
     def add_pending_mill(source, owner, count=1):
@@ -1679,6 +2060,27 @@ def extract_game_plays(
         else:
             flush_pending_mill_group()
             pending_mill_group = {"source": source, "owner": owner, "count": count}
+        return True
+
+    def add_pending_life_change(source, owner, delta, total):
+        """Group repeated ability life changes while keeping the final total."""
+        key = (source, owner, delta)
+        if key in pending_life_groups:
+            pending_life_groups[key]["count"] += 1
+            # Running life totals differ on every annotation; the final one is
+            # the strategic value readers need in the grouped transcript line.
+            pending_life_groups[key]["total"] = total
+        else:
+            # Several triggers can alternate in one event burst, e.g. Ayara
+            # draining and Vito seeing the life gain. Keep separate buckets until
+            # an unrelated event flushes the whole burst.
+            pending_life_groups[key] = {
+                "source": source,
+                "owner": owner,
+                "delta": delta,
+                "count": 1,
+                "total": total,
+            }
         return True
 
     def add_pending_death(controller, name):
@@ -1814,7 +2216,6 @@ def extract_game_plays(
 
     def emit_life_change(ann, gsm):
         """Emit life gain/loss lines from ModifiedLife annotations."""
-        flush_pending_event_groups()
         details = detail_dict(ann.get("details"))
         delta = details.get("life")
         affected = ann.get("affectedIds") or []
@@ -1828,12 +2229,12 @@ def extract_game_plays(
         seen_life_changes.add(key)
 
         total = players.get(seat, {}).get("lifeTotal")
-        line = phrase_life_change(owner_label(seat), delta, total)
         source = source_label(ann.get("affectorId"))
-        if source and source.endswith(" trigger"):
-            emit(f"{source}: {line}")
+        if should_group_life_change_source(source) or pending_life_groups:
+            add_pending_life_change(life_change_group_source(source), owner_label(seat), delta, total)
         else:
-            emit(line)
+            flush_pending_event_groups()
+            emit(phrase_life_change(owner_label(seat), delta, total))
 
     def emit_choice_result(ann, gsm):
         """Emit readable choice-result lines from Arena's numeric choice annotations."""
@@ -1920,11 +2321,12 @@ def extract_game_plays(
                 if key not in seen_combat:
                     seen_combat.add(key)
                     flush_pending_event_groups()
+                    target = confident_combat_target_label(target_id)
                     emit(
                         phrase_player_action(
                             owner_label(obj.get("controllerSeatId")),
                             "attack",
-                            f"{target_label(target_id)} with {card_label(iid)}",
+                            attack_phrase(target, card_label(iid)),
                         )
                     )
 
@@ -2454,180 +2856,182 @@ def extract_game_plays(
             flush=True,
         )
 
-    with player_log.open("rb") as f:
-        if live:
-            # Live mode starts with the current game, meaning the last match
-            # Arena has started in Player.log, then behaves like tail -f.
-            live_start, live_game_number = find_last_game_start(player_log)
-            f.seek(live_start)
-            read_bytes = live_start
-            current_match_number = max(0, live_game_number - 1)
+    try:
+        for log_path in log_paths:
+            with log_path.open("rb") as f:
+                if live:
+                    # Live mode starts with the current game, meaning the last match
+                    # Arena has started in Player.log, then behaves like tail -f.
+                    live_start, live_game_number = find_last_game_start(player_log)
+                    f.seek(live_start)
+                    read_bytes = live_start
+                    current_match_number = max(0, live_game_number - 1)
 
-        try:
-            while True:
-                raw_line = f.readline()
-                if not raw_line:
-                    if live:
-                        time.sleep(0.25)
-                        continue
-                    break
-
-                read_bytes += len(raw_line)
-                render_progress()
-
-                line = raw_line.decode("utf-8", errors="ignore")
-                line = line.strip()
-                if not line.startswith("{"):
-                    continue
-
-                try:
-                    root = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-
-                for msg in root.get("greToClientEvent", {}).get("greToClientMessages", []):
-                    gsm = msg.get("gameStateMessage")
-                    if not gsm:
-                        continue
-
-                    match_id = gsm.get("gameInfo", {}).get("matchID")
-                    if match_id and match_id != current_match:
-                        finalize_current_match()
-                        current_match = match_id
-                        current_match_number += 1
-                        current_match_lines = []
-                        current_match_record = {
-                            "number": current_match_number,
-                            "match_id": current_match,
-                            "lines": current_match_lines,
-                            "events": [],
-                            "debug_hits": [],
-                            "debug_seen_objects": set(),
-                            "choice_events": [],
-                            "target_events": [],
-                            "trigger_events": [],
-                            "has_result": False,
-                            "saw_postgame_payload": False,
-                            "postgame_hint": None,
-                            "finalized": False,
-                        }
-                        transcript_matches.append(current_match_record)
-                        event_index = 0
-                        current_turn = None
-                        last_game_state_id = None
-                        known_local_seat = None
-                        zones.clear()
-                        objects.clear()
-                        players.clear()
-                        team_to_seats.clear()
-                        seen_combat.clear()
-                        seen_commander_damage.clear()
-                        seen_no_combat_damage.clear()
-                        seen_enters_attacking.clear()
-                        remembered_object_labels.clear()
-                        stack_display_names.clear()
-                        ability_trigger_ids.clear()
-                        ability_source_names.clear()
-                        pending_stack_casts.clear()
-                        pending_mill_group = None
-                        pending_death_events.clear()
-                        active_effects.clear()
-                        commander_grps_by_seat.clear()
-                        commander_instance_ids.clear()
-                        commander_cast_counts.clear()
-                        commander_damage.clear()
-                        player_counters.clear()
-                        object_counters.clear()
-                        persistent_annotations.clear()
-                        known_targets_by_source.clear()
-                        known_target_names_by_source.clear()
-                        emit(f"===== GAME {current_match_number}: MATCH {current_match} =====")
-
-                    game_state_id = gsm.get("gameStateId")
-                    if (
-                        game_state_id is not None
-                        and last_game_state_id is not None
-                        and game_state_id < last_game_state_id
-                    ):
-                        continue
-                    if game_state_id is not None:
-                        last_game_state_id = game_state_id
-
-                    update_state(gsm)
-                    if known_local_seat is None:
-                        known_local_seat = infer_local_seat()
-
-                    turn_info = gsm.get("turnInfo", {})
-                    if "turnNumber" in turn_info and turn_info["turnNumber"] != current_turn:
-                        flush_pending_event_groups()
-                        current_turn = turn_info["turnNumber"]
-                        emit("")
-                        emit(
-                            f"=== Turn {current_turn}: "
-                            f"{owner_label(turn_info.get('activePlayer'))} ==="
-                        )
-                        emit_turn_state()
-
-                    event_index += 1
-                    record_gameplay_event(msg, gsm)
-                    emit_continuous_effect_events(gsm)
-                    emit_enters_attacking_events(gsm)
-                    emit_combat_events(gsm)
-
-                    for ann in gsm.get("annotations", []):
-                        if debug_annotations:
-                            record_debug(ann)
-
-                        key = annotation_key(ann, gsm, msg)
-                        if key in seen_annotations:
+                while True:
+                    raw_line = f.readline()
+                    if not raw_line:
+                        if live:
+                            time.sleep(0.25)
                             continue
-                        seen_annotations.add(key)
+                        break
 
-                        ann_types = set(ann.get("type") or [])
-                        if "AnnotationType_ObjectIdChanged" in ann_types:
-                            note_object_id_change(ann)
-                        elif "AnnotationType_AbilityInstanceCreated" in ann_types:
-                            # Arena can create a triggered ability before the source
-                            # spell's later Resolve annotation. Emit any delayed
-                            # source cast here so the ability does not appear first.
-                            flush_pending_cast_for_affector(ann.get("affectorId"))
-                            is_triggered_ability = not action_activates_source(
-                                gsm,
-                                ann.get("affectorId"),
-                            )
-                            for affected_id in ann.get("affectedIds") or []:
-                                if is_triggered_ability:
-                                    ability_trigger_ids.add(affected_id)
-                                obj = objects.get(affected_id)
-                                if obj:
-                                    flush_pending_cast_for_affector(affected_id)
-                                    label = object_label_from_object(obj)
-                                    if label:
-                                        remembered_object_labels[affected_id] = label
-                                        stack_display_names[affected_id] = label
-                        elif "AnnotationType_ZoneTransfer" in ann_types:
-                            emit_zone_transfer(ann, gsm)
-                        elif "AnnotationType_ModifiedLife" in ann_types:
-                            emit_life_change(ann, gsm)
-                        elif "AnnotationType_ChoiceResult" in ann_types:
-                            emit_choice_result(ann, gsm)
-                        elif "AnnotationType_DamageDealt" in ann_types:
-                            emit_commander_damage(ann, gsm)
-                            emit_infect_damage(ann, gsm)
-                            emit_no_combat_damage(ann, gsm)
-                        elif (
-                            "AnnotationType_CounterAdded" in ann_types
-                            or "AnnotationType_CounterRemoved" in ann_types
+                    read_bytes += len(raw_line)
+                    render_progress()
+
+                    line = raw_line.decode("utf-8", errors="ignore")
+                    line = line.strip()
+                    if not line.startswith("{"):
+                        continue
+
+                    try:
+                        root = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    for msg in root.get("greToClientEvent", {}).get("greToClientMessages", []):
+                        gsm = msg.get("gameStateMessage")
+                        if not gsm:
+                            continue
+
+                        match_id = gsm.get("gameInfo", {}).get("matchID")
+                        if match_id and match_id != current_match:
+                            finalize_current_match()
+                            current_match = match_id
+                            current_match_number += 1
+                            current_match_lines = []
+                            current_match_record = {
+                                "number": current_match_number,
+                                "match_id": current_match,
+                                "lines": current_match_lines,
+                                "events": [],
+                                "debug_hits": [],
+                                "debug_seen_objects": set(),
+                                "choice_events": [],
+                                "target_events": [],
+                                "trigger_events": [],
+                                "has_result": False,
+                                "saw_postgame_payload": False,
+                                "postgame_hint": None,
+                                "finalized": False,
+                            }
+                            transcript_matches.append(current_match_record)
+                            event_index = 0
+                            current_turn = None
+                            last_game_state_id = None
+                            known_local_seat = None
+                            zones.clear()
+                            objects.clear()
+                            players.clear()
+                            team_to_seats.clear()
+                            seen_combat.clear()
+                            seen_commander_damage.clear()
+                            seen_no_combat_damage.clear()
+                            seen_enters_attacking.clear()
+                            remembered_object_labels.clear()
+                            stack_display_names.clear()
+                            ability_trigger_ids.clear()
+                            ability_source_names.clear()
+                            pending_stack_casts.clear()
+                            pending_mill_group = None
+                            pending_life_groups.clear()
+                            pending_death_events.clear()
+                            active_effects.clear()
+                            commander_grps_by_seat.clear()
+                            commander_instance_ids.clear()
+                            commander_cast_counts.clear()
+                            commander_damage.clear()
+                            player_counters.clear()
+                            object_counters.clear()
+                            persistent_annotations.clear()
+                            known_targets_by_source.clear()
+                            known_target_names_by_source.clear()
+                            emit(f"===== GAME {current_match_number}: MATCH {current_match} =====")
+
+                        game_state_id = gsm.get("gameStateId")
+                        if (
+                            game_state_id is not None
+                            and last_game_state_id is not None
+                            and game_state_id < last_game_state_id
                         ):
-                            emit_counter_change(ann, gsm)
+                            continue
+                        if game_state_id is not None:
+                            last_game_state_id = game_state_id
 
-                    emit_match_results(gsm)
+                        update_state(gsm)
+                        if known_local_seat is None:
+                            known_local_seat = infer_local_seat()
 
-                if not root.get("greToClientEvent"):
-                    mark_postgame_payload(root)
-        except KeyboardInterrupt:
-            if not live:
-                raise
+                        turn_info = gsm.get("turnInfo", {})
+                        if "turnNumber" in turn_info and turn_info["turnNumber"] != current_turn:
+                            flush_pending_event_groups()
+                            current_turn = turn_info["turnNumber"]
+                            emit("")
+                            emit(
+                                f"=== Turn {current_turn}: "
+                                f"{owner_label(turn_info.get('activePlayer'))} ==="
+                            )
+                            emit_turn_state()
+
+                        event_index += 1
+                        record_gameplay_event(msg, gsm)
+                        emit_continuous_effect_events(gsm)
+                        emit_enters_attacking_events(gsm)
+                        emit_combat_events(gsm)
+
+                        for ann in gsm.get("annotations", []):
+                            if debug_annotations:
+                                record_debug(ann)
+
+                            key = annotation_key(ann, gsm, msg)
+                            if key in seen_annotations:
+                                continue
+                            seen_annotations.add(key)
+
+                            ann_types = set(ann.get("type") or [])
+                            if "AnnotationType_ObjectIdChanged" in ann_types:
+                                note_object_id_change(ann)
+                            elif "AnnotationType_AbilityInstanceCreated" in ann_types:
+                                # Arena can create a triggered ability before the source
+                                # spell's later Resolve annotation. Emit any delayed
+                                # source cast here so the ability does not appear first.
+                                flush_pending_cast_for_affector(ann.get("affectorId"))
+                                is_triggered_ability = not action_activates_source(
+                                    gsm,
+                                    ann.get("affectorId"),
+                                )
+                                for affected_id in ann.get("affectedIds") or []:
+                                    if is_triggered_ability:
+                                        ability_trigger_ids.add(affected_id)
+                                    obj = objects.get(affected_id)
+                                    if obj:
+                                        flush_pending_cast_for_affector(affected_id)
+                                        label = object_label_from_object(obj)
+                                        if label:
+                                            remembered_object_labels[affected_id] = label
+                                            stack_display_names[affected_id] = label
+                            elif "AnnotationType_ZoneTransfer" in ann_types:
+                                emit_zone_transfer(ann, gsm)
+                            elif "AnnotationType_ModifiedLife" in ann_types:
+                                emit_life_change(ann, gsm)
+                            elif "AnnotationType_ChoiceResult" in ann_types:
+                                emit_choice_result(ann, gsm)
+                            elif "AnnotationType_DamageDealt" in ann_types:
+                                emit_commander_damage(ann, gsm)
+                                emit_infect_damage(ann, gsm)
+                                emit_no_combat_damage(ann, gsm)
+                            elif (
+                                "AnnotationType_CounterAdded" in ann_types
+                                or "AnnotationType_CounterRemoved" in ann_types
+                            ):
+                                emit_counter_change(ann, gsm)
+
+                        emit_match_results(gsm)
+
+                    if not root.get("greToClientEvent"):
+                        mark_postgame_payload(root)
+    except KeyboardInterrupt:
+        if not live:
+            raise
 
     finalize_current_match()
 
@@ -2800,6 +3204,9 @@ def main() -> None:
   Print the most recent game:
     python3 mtga_extract_games.py --last 1 --no-resolves
 
+  Print every game in Player.log:
+    python3 mtga_extract_games.py --all --no-resolves
+
   Save the last three games to a text file:
     python3 mtga_extract_games.py --last 3 --no-resolves > mtga_transcript.txt
 
@@ -2876,6 +3283,11 @@ No pip install step is required; this script only uses Python's standard library
         help="advanced: print compact snippets for trigger-like gameplay events",
     )
     selection_group = parser.add_mutually_exclusive_group()
+    selection_group.add_argument(
+        "--all",
+        action="store_true",
+        help="output every game in the log; this is also the default when no selector is used",
+    )
     selection_group.add_argument(
         "--nth-from-start",
         "--select",
@@ -2967,14 +3379,16 @@ No pip install step is required; this script only uses Python's standard library
                 args.first,
                 args.last,
                 args.range,
-            )
-        )
+                args.all,
+	            )
+	        )
         if has_selection:
             parser.error("--live cannot be combined with game selection options")
         if args.progress:
             parser.error("--live cannot be combined with --progress")
 
     grp_to_name = load_grp_id_to_name(carddb)
+    card_metadata = load_grp_id_to_metadata(carddb)
     enum_value_names = {
         # Player choice payloads for creature types use the same numeric values
         # as the card database SubType enum, which keeps this from becoming a
@@ -3013,6 +3427,7 @@ No pip install step is required; this script only uses Python's standard library
         show_turn_state=not args.no_turn_state,
         live=args.live,
         enum_value_names=enum_value_names,
+        card_metadata=card_metadata,
     )
 
 

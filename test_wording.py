@@ -9,9 +9,13 @@ from mtga_extract_games import (
     active_effect_for_resolved_permanent,
     ability_source_instance_id,
     ability_object_label,
+    attack_phrase,
     attachment_summary_parts,
     append_target_phrase,
+    available_resource_lines,
     base_cast_name,
+    card_is_land,
+    card_is_nonland_permanent,
     clean_localized_enum_name,
     combine_duplicate_transcript_lines,
     compact_counted_name,
@@ -20,7 +24,12 @@ from mtga_extract_games import (
     death_label_or_none,
     is_hidden_arena_object,
     load_enum_value_names,
+    load_grp_id_to_metadata,
+    life_change_group_source,
     object_pronoun,
+    ownership_summary_part,
+    parse_carddb_int_list,
+    player_log_paths_for_reading,
     phrase_commander_cast_note,
     phrase_commander_damage,
     phrase_concede_result,
@@ -30,6 +39,8 @@ from mtga_extract_games import (
     phrase_grouped_deaths,
     phrase_incomplete_game_notice,
     phrase_life_change,
+    phrase_life_change_group,
+    phrase_life_change_summary,
     phrase_library_count,
     phrase_mulligan,
     phrase_mill_summary,
@@ -44,8 +55,11 @@ from mtga_extract_games import (
     modifier_summary_suffix,
     resolve_stack_name,
     resolve_input_paths,
+    resource_mechanics_for_zone,
+    resource_mechanics_from_text,
     scaled_power_toughness_counter,
     select_transcript_matches,
+    should_group_life_change_source,
     is_low_fidelity_update_without_turn,
     should_infer_missing_cast_before_resolve,
     should_emit_resolve_line,
@@ -135,6 +149,19 @@ class WordingTests(unittest.TestCase):
             self.assertEqual(resolved_carddb, carddb)
             self.assertIsNone(warning)
 
+    def test_player_prev_log_is_read_before_current_log(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            player_log = Path(tmpdir) / "Player.log"
+            previous_log = Path(tmpdir) / "Player-prev.log"
+            player_log.write_text("", encoding="utf-8")
+            previous_log.write_text("", encoding="utf-8")
+
+            self.assertEqual(
+                player_log_paths_for_reading(player_log),
+                [previous_log, player_log],
+            )
+            self.assertEqual(player_log_paths_for_reading(player_log, live=True), [player_log])
+
     def test_path_resolution_uses_environment_paths(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             player_log = Path(tmpdir) / "Player.log"
@@ -184,6 +211,32 @@ class WordingTests(unittest.TestCase):
             phrase_life_change("Opponent", -2, 18),
             "Opponent loses 2 life (18)",
         )
+        self.assertEqual(
+            phrase_life_change_summary(
+                "Authority of the Consuls trigger",
+                "Opponent",
+                1,
+                9,
+                122,
+            ),
+            "9x Authority of the Consuls trigger: Opponent gains 9 life (122)",
+        )
+        self.assertEqual(
+            phrase_life_change_summary("Blood Artist trigger", "Me", -1, 1, 24),
+            "Blood Artist trigger: I lose 1 life (24)",
+        )
+        self.assertEqual(
+            phrase_life_change_group("Me", -1, 11, 1),
+            "11x I lose 11 life (1)",
+        )
+        self.assertEqual(
+            phrase_life_change_summary(None, "Me", -1, 11, 1),
+            "11x I lose 11 life (1)",
+        )
+        self.assertTrue(should_group_life_change_source("Ayara, First of Locthwain ability"))
+        self.assertTrue(should_group_life_change_source("A-Blood Artist trigger"))
+        self.assertFalse(should_group_life_change_source(None))
+        self.assertEqual(life_change_group_source("Vindictive Vampire"), "Vindictive Vampire ability")
 
     def test_death_wording(self):
         self.assertEqual(
@@ -215,6 +268,16 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(
             phrase_enters_attacking(None, "Robot token"),
             "Robot token enters the battlefield attacking",
+        )
+
+    def test_attack_phrase_suppresses_unknown_target(self):
+        self.assertEqual(
+            attack_phrase("Invasion of Zendikar", "Urza's Construction Drone"),
+            "Invasion of Zendikar with Urza's Construction Drone",
+        )
+        self.assertEqual(
+            attack_phrase(None, "Urza's Construction Drone"),
+            "with Urza's Construction Drone",
         )
 
     def test_passive_zone_change_wording_examples(self):
@@ -307,6 +370,79 @@ class WordingTests(unittest.TestCase):
             )
         self.assertEqual(clean_localized_enum_name("<nobr>Assembly-Worker</nobr>"), "Assembly-Worker")
 
+    def test_card_metadata_loader_reads_types_and_resource_mechanics(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            carddb = Path(tmpdir) / "carddb.mtga"
+            con = sqlite3.connect(carddb)
+            cur = con.cursor()
+            cur.execute("CREATE TABLE Cards(GrpId INT, TitleId INT, Types TEXT, AbilityIds TEXT)")
+            cur.execute("CREATE TABLE Abilities(Id INT, TextId INT)")
+            cur.execute("CREATE TABLE Localizations_enUS(LocId INT, Formatted INT, Loc TEXT)")
+            cur.executemany(
+                "INSERT INTO Cards VALUES (?, ?, ?, ?)",
+                [
+                    (100, 1, "5", ""),
+                    (200, 2, "10", "5301:3105"),
+                    (300, 3, "2", "7000:1"),
+                ],
+            )
+            cur.executemany(
+                "INSERT INTO Abilities VALUES (?, ?)",
+                [(5301, 10), (7000, 11)],
+            )
+            cur.executemany(
+                "INSERT INTO Localizations_enUS VALUES (?, ?, ?)",
+                [
+                    (1, 1, "Forest"),
+                    (2, 1, "Faithless Looting"),
+                    (3, 1, "Uro, Titan of Nature's Wrath"),
+                    (10, 1, "Flashback {o2oR}"),
+                    (11, 1, "Escape-{oGoG}, Exile five other cards from your graveyard."),
+                ],
+            )
+            con.commit()
+            con.close()
+
+            metadata = load_grp_id_to_metadata(carddb)
+
+        self.assertEqual(metadata[100]["type_numbers"], {5})
+        self.assertEqual(metadata[200]["play_mechanics"], ["flashback"])
+        self.assertEqual(metadata[300]["play_mechanics"], ["escape"])
+
+    def test_available_resource_helpers(self):
+        land_meta = {"type_numbers": {5}}
+        creature_meta = {"type_numbers": {2}}
+        self.assertEqual(parse_carddb_int_list("6832:437616,165909:683428"), [6832, 165909])
+        self.assertEqual(resource_mechanics_from_text(["Flashback {o2oR}", "Escape cost"]), ["escape", "flashback"])
+        self.assertEqual(resource_mechanics_for_zone(["flashback", "adventure"], "graveyard"), ["flashback"])
+        self.assertEqual(resource_mechanics_for_zone(["flashback", "adventure"], "exile"), ["adventure"])
+        self.assertTrue(card_is_land({}, land_meta))
+        self.assertFalse(card_is_land({"cardTypes": ["CardType_Creature"]}, creature_meta))
+        self.assertTrue(card_is_nonland_permanent({}, creature_meta))
+        self.assertFalse(card_is_nonland_permanent({}, land_meta))
+        self.assertEqual(
+            available_resource_lines(
+                {
+                    "playable_lands_from_graveyard": ["Riveteers Overlook"],
+                    "conduit_candidates": [
+                        "Springheart Nantuko [limited by Conduit, timing/cost not checked]"
+                    ],
+                    "potential_graveyard_exile_plays": [
+                        "Faithless Looting [flashback from graveyard, cost not checked]"
+                    ],
+                }
+            ),
+            [
+                "Available Resources:",
+                "  Playable lands from graveyard:",
+                "    Riveteers Overlook",
+                "  Conduit of Worlds candidates:",
+                "    Springheart Nantuko [limited by Conduit, timing/cost not checked]",
+                "  Other playable cards:",
+                "    Faithless Looting [flashback from graveyard, cost not checked]",
+            ],
+        )
+
     def test_commander_wording(self):
         self.assertEqual(
             phrase_commander_cast_note(2),
@@ -320,6 +456,7 @@ class WordingTests(unittest.TestCase):
             phrase_commander_damage("Zacama, Primal Calamity", 7, "Me", 7),
             "Commander damage: Zacama, Primal Calamity deals 7 to me (7 total)",
         )
+        self.assertEqual(object_pronoun("Me"), "me")
 
     def test_player_counter_wording(self):
         self.assertEqual(
@@ -369,6 +506,11 @@ class WordingTests(unittest.TestCase):
             ),
             " (+1/+1 from counters; enchanted by Crystal Carapace)",
         )
+
+    def test_ownership_summary_wording(self):
+        self.assertIsNone(ownership_summary_part("Me", "Me"))
+        self.assertEqual(ownership_summary_part("Opponent", "Me"), "owned by me")
+        self.assertEqual(ownership_summary_part("Me", "Opponent"), "owned by Opponent")
 
     def test_repeated_hidden_card_wording(self):
         self.assertEqual(compact_counted_name("unknown card", 1), "unknown card")

@@ -70,7 +70,7 @@ Usually you can just run:
 python3 mtga_extract_games.py --last 1 --no-resolves
 ```
 
-The program will look in the normal macOS locations for `Player.log` and the newest `Raw_CardDatabase_*.mtga` file. If it cannot find them, it will tell you what paths to set.
+The program will look in the normal macOS locations for `Player.log` and the newest `Raw_CardDatabase_*.mtga` file. If it finds `Player-prev.log` next to `Player.log`, it reads that first so rotated Arena logs are included too. If it cannot find the needed paths, it will tell you what paths to set.
 
 You can also set paths yourself on macOS:
 
@@ -171,6 +171,12 @@ Use this for the first three games in the log:
 python3 mtga_extract_games.py --first 3 --no-resolves
 ```
 
+Use this for every game in `Player.log` and `Player-prev.log`:
+
+```bash
+python3 mtga_extract_games.py --all --no-resolves
+```
+
 Use this to save output to a text file:
 
 ```bash
@@ -181,6 +187,7 @@ The most useful options are:
 
 - `--last 1`: show the most recent game
 - `--last 3`: show the last three games
+- `--all`: show every game in the current and previous log files
 - `--first 3`: show the first three games
 - `--nth-from-start 4`: show only game 4 from the log
 - `--nth-from-end 2`: show the next-to-last game
