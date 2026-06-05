@@ -1,21 +1,91 @@
 # MTGArena_Game_Extractor
 
-I wanted a tool that gave me my MTG Arena games in plain text so I could review them later and pass them into other software. Since this tools is reading logs from a game with frequent updates I expect it to need updating a lot to keep up. 
+I wanted a tool that gave me my MTG Arena games in plain text so I could review them later and pass them into other software. I could not find anything straightforward that did this, so I wrote this Python program.
 
-I could not find anything straightforward that did this, so I wrote this Python program.
+Since this tools is reading logs from a game with frequent updates I expect it to need updating a lot to keep up. 
 
 MTG Arena writes a lot of useful information into `Player.log`, but it is buried in large JSON messages and most of the gameplay events use internal IDs instead of card names. This script reads the log, follows the game state messages, and uses the local Arena card database to translate card `grpId` values into readable card names.
 
 The result is a transcript that looks more like:
 
 ```text
-=== Turn 3: Me ===
-I play Snow-Covered Plains
-I cast Giada, Font of Hope from command zone
+===== GAME 24: MATCH afae4493-13bd-43c0-8465-9490c0a71329 =====
+I mulligan (kept 7 cards)
 
-=== Turn 4: Opponent ===
-Opponent plays Island
-Opponent casts Arcane Signet
+=== Turn 1: Opponent ===
+My side:
+  Board:
+    Lands: (empty)
+    Artifacts/Enchantments: (empty)
+    Creatures: (empty)
+  Hand: Boon-Bringer Valkyrie; Esper Sentinel; 2x Plains; Stroke of Midnight; Swords to Plowshares; Thalia, Heretic Cathar
+  Library: 92 cards
+  Command: Giada, Font of Hope
+  Graveyard: (empty)
+  Exile: (empty)
+Opponent:
+  Board:
+    Lands: (empty)
+    Artifacts/Enchantments: (empty)
+    Creatures: (empty)
+  Hand: 7 unknown cards
+  Library: 92 cards
+  Command: Kefka, Court Mage
+  Graveyard: (empty)
+  Exile: (empty)
+Opponent plays Raucous Theater
+
+=== Turn 2: Me ===
+My side:
+  Board:
+    Lands: (empty)
+    Artifacts/Enchantments: (empty)
+    Creatures: (empty)
+  Hand: Boon-Bringer Valkyrie; Esper Sentinel; 2x Plains; Stroke of Midnight; Swords to Plowshares; Thalia, Heretic Cathar
+  Library: 92 cards
+  Command: Giada, Font of Hope
+  Graveyard: (empty)
+  Exile: (empty)
+Opponent:
+  Board:
+    Lands: Tapped: Raucous Theater
+    Artifacts/Enchantments: (empty)
+    Creatures: (empty)
+  Hand: 6 unknown cards
+  Library: 91 cards
+  Command: Kefka, Court Mage
+  Graveyard: Mischievous Mystic
+  Exile: (empty)
+I play Plains
+I cast Esper Sentinel
+Esper Sentinel resolves
+
+=== Turn 3: Opponent ===
+My side:
+  Board:
+    Lands: Tapped: Plains
+    Artifacts/Enchantments: (empty)
+    Creatures: Untapped: Esper Sentinel (summoning sick)
+  Hand: Boon-Bringer Valkyrie; Champions of Tyr; Plains; Stroke of Midnight; Swords to Plowshares; Thalia, Heretic Cathar
+  Library: 91 cards
+  Command: Giada, Font of Hope
+  Graveyard: (empty)
+  Exile: (empty)
+Opponent:
+  Board:
+    Lands: Untapped: Raucous Theater
+    Artifacts/Enchantments: (empty)
+    Creatures: (empty)
+  Hand: 6 unknown cards
+  Library: 91 cards
+  Command: Kefka, Court Mage
+  Graveyard: Mischievous Mystic
+  Exile: (empty)
+Opponent plays Riverpyre Verge
+Opponent casts Depressurize targeting Esper Sentinel
+Depressurize destroys Esper Sentinel
+Depressurize resolves
+
 ```
 
 It can also print board state, hands, graveyards, exile, commanders, attacks, blocks, life changes, mulligans, and match results when those details are available in the log.
