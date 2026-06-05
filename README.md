@@ -1,4 +1,4 @@
-# MTGArena_Game_Extractor
+# MTG Arena Game Extractor
 
 I wanted a tool that gave me my MTG Arena games in plain text so I could review them later and pass them into other software. I could not find anything straightforward that did this, so I wrote this Python program.
 
