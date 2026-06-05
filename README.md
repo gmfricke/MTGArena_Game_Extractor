@@ -18,12 +18,20 @@ Game type: Constructed Brawl (25 starting life)
 Opponent casts Mutable Explorer
 Opponent plays Plains
 Opponent casts Insidious Roots
+
+-- Combat - attackers --
 Opponent attacks me with Crabomination; Steel Seraph; and Rottenmouth Viper
 2x I sacrifice Warrior
+
+-- Combat - blockers --
 Warrior blocks Crabomination
 Lyra Dawnbringer blocks Steel Seraph
 Enduring Angel blocks Rottenmouth Viper
+
+-- Combat - first strike damage --
 I gain 12 life (27)
+
+-- Postcombat main --
 My Steel Seraph dies
 Opponent's Rottenmouth Viper dies
 Warrior dies
@@ -58,9 +66,15 @@ I cast Sheltered by Ghosts targeting Giada, Font of Hope
 Sheltered by Ghosts trigger exiles Kotis, Sibsig Champion
 I choose Angel for Vanquisher's Banner (creature type)
 I cast Vanquisher's Banner
+
+-- Combat - attackers --
 I attack Opponent with Giada, Font of Hope; Lyra Dawnbringer; and Enduring Angel
+
+-- Combat - first strike damage --
 Opponent loses 14 life (10)
 I gain 14 life (41)
+
+-- Combat - damage --
 Commander damage: Giada, Font of Hope deals 5 to Opponent (7 total)
 Opponent loses 12 life (-2)
 I gain 12 life (53)
@@ -274,6 +288,7 @@ The most useful options are:
 - `--live`: show the current game from its start, then print new transcript lines as Arena writes them
 - `--no-resolves`: hide routine "resolves" lines
 - `--no-turn-state`: hide board and hand snapshots
+- `--no-phases`: hide phase and step headings
 - `--progress`: show a progress bar on stderr while parsing
 - `--no-progress`: hide the progress bar
 - `--colour never`: do not add ANSI colour escapes; this is the default

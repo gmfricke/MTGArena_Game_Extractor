@@ -738,7 +738,7 @@ def transcript_line_style(line: str) -> str | None:
         return None
     if line.startswith("===== GAME "):
         return "game_header"
-    if line.startswith("Game type:"):
+    if line.startswith("Game type:") or (line.startswith("-- ") and line.endswith("--")):
         return "metadata"
     if line.startswith("=== Turn ") and line.endswith(": Me ==="):
         return "me_header"
@@ -954,6 +954,37 @@ def life_change_group_source(source: str | None) -> str | None:
     if not source or should_group_life_change_source(source):
         return source
     return f"{source} ability"
+
+
+def phase_section_label(turn_info: dict) -> str | None:
+    """Return a compact transcript heading for an Arena phase/step pair."""
+    phase = turn_info.get("phase")
+    step = turn_info.get("step")
+    if phase == "Phase_Beginning":
+        return {
+            "Step_Untap": "Beginning - untap",
+            "Step_Upkeep": "Beginning - upkeep",
+            "Step_Draw": "Beginning - draw",
+        }.get(step, "Beginning")
+    if phase == "Phase_Main1":
+        return None
+    if phase == "Phase_Combat":
+        return {
+            "Step_BeginCombat": "Combat - beginning",
+            "Step_DeclareAttack": "Combat - attackers",
+            "Step_DeclareBlock": "Combat - blockers",
+            "Step_FirstStrikeDamage": "Combat - first strike damage",
+            "Step_CombatDamage": "Combat - damage",
+            "Step_EndCombat": "Combat - end",
+        }.get(step, "Combat")
+    if phase == "Phase_Main2":
+        return "Postcombat main"
+    if phase == "Phase_Ending":
+        return {
+            "Step_End": "Ending - end step",
+            "Step_Cleanup": "Ending - cleanup",
+        }.get(step, "Ending")
+    return None
 
 
 def phrase_death(controller_label: str | None, card_name: str) -> str:
@@ -1792,6 +1823,7 @@ def extract_game_plays(
     show_progress: bool | None = None,
     show_resolves: bool = True,
     show_turn_state: bool = True,
+    show_phases: bool = True,
     live: bool = False,
     enum_value_names: dict[str, dict[int, str]] | None = None,
     card_metadata: dict[int, dict] | None = None,
@@ -1841,6 +1873,9 @@ def extract_game_plays(
     known_local_seat = None
     current_match_number = 0
     current_turn_info = {}
+    current_phase_section = None
+    emitted_phase_section = None
+    suppress_phase_heading = False
     current_match_lines = None
     current_match_record = None
     transcript_matches = []
@@ -1872,7 +1907,61 @@ def extract_game_plays(
     subtype_names = enum_value_names.get("SubType") or {}
     counter_type_names = enum_value_names.get("CounterType") or {}
     choice_value_names = build_choice_value_names(subtype_names)
+    def transcript_line_needs_phase_heading(line: str) -> bool:
+        """Return true for visible gameplay lines that benefit from phase context."""
+        if not line or line.startswith(("=", "-- ", "  ", "    ")):
+            return False
+        if line.startswith(
+            (
+                "Game type:",
+                "Active Effects:",
+                "Available Resources:",
+                "Current State:",
+                "My hand:",
+                "Opponent's hand:",
+                "My board:",
+                "Opponent's board:",
+                "Winner:",
+                "Match result:",
+                "Match winner:",
+            )
+        ):
+            return False
+        return True
+
+    def emit_phase_heading_if_needed(line: str):
+        """Emit the current phase heading before the first gameplay line in it."""
+        nonlocal emitted_phase_section
+        if (
+            not show_phases
+            or suppress_phase_heading
+            or not current_phase_section
+            or emitted_phase_section == current_phase_section
+            or not transcript_line_needs_phase_heading(line)
+        ):
+            return
+        if current_match_lines is None:
+            return
+        if current_match_lines and current_match_lines[-1]:
+            current_match_lines.append("")
+            if live:
+                print("", flush=True)
+        heading = f"-- {current_phase_section} --"
+        current_match_lines.append(heading)
+        if live:
+            print(
+                colorize_transcript_line(
+                    heading,
+                    color_enabled,
+                    card_name_colors,
+                    card_name_pattern,
+                ),
+                flush=True,
+            )
+        emitted_phase_section = current_phase_section
+
     def emit(line=""):
+        emit_phase_heading_if_needed(line)
         if current_match_lines is not None:
             current_match_lines.append(line)
             if live:
@@ -1885,6 +1974,16 @@ def extract_game_plays(
                     ),
                     flush=True,
                 )
+
+    def emit_in_phase_section(line: str, section: str | None):
+        """Emit a delayed grouped line under the section where it was recorded."""
+        nonlocal current_phase_section
+        saved_section = current_phase_section
+        current_phase_section = section
+        try:
+            emit(line)
+        finally:
+            current_phase_section = saved_section
 
     def mark_postgame_payload(root):
         """Remember postgame account/course blobs that appear after GRE stops."""
@@ -1924,11 +2023,13 @@ def extract_game_plays(
         """Clear state that belongs only to the newly started Arena match."""
         nonlocal current_turn, current_turn_info, last_game_state_id
         nonlocal current_game_has_commanders, known_local_seat, event_index
-        nonlocal pending_mill_group
+        nonlocal pending_mill_group, current_phase_section, emitted_phase_section
 
         event_index = 0
         current_turn = None
         current_turn_info = {}
+        current_phase_section = None
+        emitted_phase_section = None
         last_game_state_id = None
         current_game_has_commanders = game_has_commanders(gsm.get("gameInfo"))
         known_local_seat = None
@@ -2724,8 +2825,11 @@ def extract_game_plays(
 
     def emit_turn_state():
         """Print the optional turn-start board and strategic state summary."""
+        nonlocal suppress_phase_heading
         if not show_turn_state:
             return
+        was_suppressed = suppress_phase_heading
+        suppress_phase_heading = True
         for seat in turn_state_seat_order():
             emit_player_state(seat, owner_label(seat))
         if active_effects:
@@ -2737,6 +2841,7 @@ def extract_game_plays(
             emit("Current State:")
             for line in state_lines:
                 emit(f"  {line}")
+        suppress_phase_heading = was_suppressed
 
     def emit_player_state(seat, label):
         """Print all visible zones for one player in a compact block."""
@@ -2914,14 +3019,15 @@ def extract_game_plays(
             last_group_index_by_owner[group["owner"]] = index
         for index, group in enumerate(groups):
             total = group["total"] if last_group_index_by_owner[group["owner"]] == index else None
-            emit(
+            emit_in_phase_section(
                 phrase_life_change_summary(
                     group["source"],
                     group["owner"],
                     group["delta"],
                     group["count"],
                     total,
-                )
+                ),
+                group.get("section"),
             )
         pending_life_groups = {}
 
@@ -2980,6 +3086,7 @@ def extract_game_plays(
                 "delta": delta,
                 "count": 1,
                 "total": total,
+                "section": current_phase_section,
             }
         return True
 
@@ -3868,12 +3975,16 @@ def extract_game_plays(
                         if "turnNumber" in turn_info and turn_info["turnNumber"] != current_turn:
                             flush_pending_event_groups()
                             current_turn = turn_info["turnNumber"]
+                            current_phase_section = None
+                            emitted_phase_section = None
                             emit("")
                             emit(
                                 f"=== Turn {current_turn}: "
                                 f"{owner_label(turn_info.get('activePlayer'))} ==="
                             )
                             emit_turn_state()
+                        if turn_info:
+                            current_phase_section = phase_section_label(turn_info)
 
                         event_index += 1
                         record_gameplay_event(msg, gsm)
@@ -4224,6 +4335,11 @@ No pip install step is required; this script only uses Python's standard library
         help="hide board, hand, graveyard, exile, and commander snapshots at turn starts",
     )
     parser.add_argument(
+        "--no-phases",
+        action="store_true",
+        help="hide phase/step headings in the transcript",
+    )
+    parser.add_argument(
         "--live",
         action="store_true",
         help="print the current game from its start, then watch Player.log for new lines",
@@ -4327,6 +4443,7 @@ No pip install step is required; this script only uses Python's standard library
         show_progress=False if args.live else True if args.progress else False if args.no_progress else None,
         show_resolves=not args.no_resolves,
         show_turn_state=not args.no_turn_state,
+        show_phases=not args.no_phases,
         live=args.live,
         enum_value_names=enum_value_names,
         card_metadata=card_metadata,
