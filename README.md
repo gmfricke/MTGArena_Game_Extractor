@@ -6,7 +6,7 @@ Since this tool reads logs from a game with frequent updates I expect it to need
 
 MTG Arena writes a lot of useful information into `Player.log`, but it is buried in large JSON messages and most of the gameplay events use internal IDs instead of card names. This script reads the log, follows the game state messages, and uses the local Arena card database to translate card `grpId` values into readable card names.
 
-The result is a transcript that looks more like:
+The result is a transcript that looks like:
 
 ```text
 ===== GAME 25: MATCH 3319fccc-f8d0-4775-be1c-1f810a1bbd18 =====
