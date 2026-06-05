@@ -60,6 +60,7 @@ from mtga_extract_games import (
     grouped_name_phrase,
     has_live_selection_conflict,
     modifier_summary_suffix,
+    remove_redundant_match_winner_lines,
     resolve_stack_name,
     resolve_input_paths,
     resource_mechanics_for_zone,
@@ -165,13 +166,35 @@ class WordingTests(unittest.TestCase):
             [
                 "I play Temple of Enlightenment",
                 (
-                    "I attack Opponent with Healer's Hawk, Giada, Font of Hope, "
-                    "Inspiring Overseer, Empyrean Eagle, and Youthful Valkyrie"
+                    "I attack Opponent with Healer's Hawk; Giada, Font of Hope; "
+                    "Inspiring Overseer; Empyrean Eagle; and Youthful Valkyrie"
                 ),
                 "Opponent loses 15 life (-4)",
                 "Opponent attacks me with Fanatical Firebrand and Crusader of Odric",
                 "Opponent attacks Invasion of Zendikar with Frenzied Goblin",
             ],
+        )
+
+    def test_redundant_match_winner_is_removed_after_same_game_winner(self):
+        self.assertEqual(
+            remove_redundant_match_winner_lines(
+                [
+                    "Opponent loses 15 life (-4)",
+                    "",
+                    "Winner: Me",
+                    "",
+                    "Match winner: Me",
+                ]
+            ),
+            [
+                "Opponent loses 15 life (-4)",
+                "",
+                "Winner: Me",
+            ],
+        )
+        self.assertEqual(
+            remove_redundant_match_winner_lines(["Winner: Me", "", "Match winner: Opponent"]),
+            ["Winner: Me", "", "Match winner: Opponent"],
         )
 
     def test_game_selection_modes(self):

@@ -853,6 +853,15 @@ def joined_english_list(items: list[str]) -> str:
     return f"{', '.join(items[:-1])}, and {items[-1]}"
 
 
+def joined_semicolon_list(items: list[str]) -> str:
+    """Join card names with semicolons because card names often contain commas."""
+    if len(items) <= 1:
+        return items[0] if items else ""
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    return f"{'; '.join(items[:-1])}; and {items[-1]}"
+
+
 def parse_attack_line(line: str) -> tuple[str, str, str] | None:
     """Parse simple attack declaration transcript lines."""
     match = re.fullmatch(r"(I|Opponent) attacks? (.+) with (.+)", line)
@@ -865,7 +874,7 @@ def parse_attack_line(line: str) -> tuple[str, str, str] | None:
 def grouped_attack_line(actor: str, target: str, attackers: list[str]) -> str:
     """Render adjacent same-target attacks as one readable line."""
     verb = "attack" if actor == "I" else "attacks"
-    return f"{actor} {verb} {target} with {joined_english_list(attackers)}"
+    return f"{actor} {verb} {target} with {joined_semicolon_list(attackers)}"
 
 
 def combine_adjacent_attack_lines(lines: list[str]) -> list[str]:
@@ -898,6 +907,42 @@ def combine_adjacent_attack_lines(lines: list[str]) -> list[str]:
             combined.append(grouped_attack_line(actor, target, attackers))
         index = cursor
     return combined
+
+
+def result_winner(line: str, prefix: str) -> str | None:
+    """Return the winner from a result line with a specific prefix."""
+    if not line.startswith(prefix):
+        return None
+    return line.removeprefix(prefix).strip()
+
+
+def remove_redundant_match_winner_lines(lines: list[str]) -> list[str]:
+    """Remove repeated match-winner lines after same-winner game results."""
+    cleaned = []
+    last_game_winner = None
+    pending_blank_after_game_winner = False
+    for line in lines:
+        game_winner = result_winner(line, "Winner:")
+        if game_winner:
+            cleaned.append(line)
+            last_game_winner = game_winner
+            pending_blank_after_game_winner = False
+            continue
+
+        match_winner = result_winner(line, "Match winner:")
+        if match_winner and match_winner == last_game_winner:
+            if pending_blank_after_game_winner and cleaned and cleaned[-1] == "":
+                cleaned.pop()
+            pending_blank_after_game_winner = False
+            continue
+
+        cleaned.append(line)
+        if line == "" and last_game_winner:
+            pending_blank_after_game_winner = True
+        elif line:
+            last_game_winner = None
+            pending_blank_after_game_winner = False
+    return cleaned
 
 
 def modifier_summary_suffix(parts: list[str]) -> str:
@@ -3378,7 +3423,9 @@ def extract_game_plays(
             print()
             print()
         first = False
-        lines = combine_adjacent_attack_lines(combine_duplicate_transcript_lines(match["lines"]))
+        lines = remove_redundant_match_winner_lines(
+            combine_adjacent_attack_lines(combine_duplicate_transcript_lines(match["lines"]))
+        )
         print("\n".join(colorize_transcript_line(line, color_enabled) for line in lines))
 
     if debug_grp_ids:
