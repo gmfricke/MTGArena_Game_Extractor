@@ -2740,9 +2740,9 @@ def extract_game_plays(
 
     def emit_player_state(seat, label):
         """Print all visible zones for one player in a compact block."""
+        emit(f"{state_zone_label(label, 'hand')}: {compact_names(hand_names(seat))}")
         emit(f"{state_player_heading(label)}:")
         emit_board_rows(seat)
-        emit(f"  Hand: {compact_names(hand_names(seat))}")
         emit(f"  {phrase_library_count('Library', library_count(seat))}")
         if current_game_has_commanders:
             emit(f"  Command: {compact_names(command_zone_names(seat))}")

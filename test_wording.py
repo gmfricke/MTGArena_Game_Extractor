@@ -98,12 +98,14 @@ class WordingTests(unittest.TestCase):
 
     def test_transcript_line_color_helpers(self):
         self.assertEqual(transcript_line_perspective("I cast Giada, Font of Hope"), "me")
+        self.assertEqual(transcript_line_perspective("My hand: Plains"), "me")
         self.assertEqual(transcript_line_perspective("My board:"), "me")
         self.assertIsNone(transcript_line_perspective("  Hand: Plains"))
         self.assertEqual(
             transcript_line_perspective("Opponent casts Arcane Signet"),
             "opponent",
         )
+        self.assertEqual(transcript_line_perspective("Opponent's hand: unknown card"), "opponent")
         self.assertIsNone(transcript_line_perspective("Game type: Constructed Duel"))
         self.assertEqual(transcript_line_style("===== GAME 1: MATCH abc ====="), "game_header")
         self.assertEqual(transcript_line_style("Game type: Constructed Duel"), "metadata")

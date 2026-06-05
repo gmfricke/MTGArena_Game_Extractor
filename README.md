@@ -31,20 +31,20 @@ Opponent chooses Black for Nykthos, Shrine to Nyx (color)
 Opponent casts Kotis, Sibsig Champion from command zone; commander cast #2; next commander tax +4
 
 === Turn 19: Me ===
+My hand: Sheltered by Ghosts; Vanquisher's Banner
 My board:
   Lands: Untapped: Emeria, Shattered Skyclave; 4x Plains
   Artifacts/Enchantments: Untapped: Mox Amber; Oketra's Monument
   Creatures: Untapped: Enduring Angel (+2/+2 from counters); Giada, Font of Hope; Lyra Dawnbringer (+1/+1 from counters)
-  Hand: Sheltered by Ghosts; Vanquisher's Banner
   Library: 81 cards
   Command: (empty)
   Graveyard: Steel Seraph
   Exile: Plains; Starnheim Aspirant; Stroke of Midnight; Swords to Plowshares
+Opponent's hand: unknown card
 Opponent's board:
   Lands: Tapped: Bojuka Bog; Forest; 3x Island; Mutavault (summoning sick); Nykthos, Shrine to Nyx (owned by me); Plains (owned by me); Thriving Grove; Thriving Isle
   Artifacts/Enchantments: Untapped: Insidious Roots
   Creatures: Untapped: Kotis, Sibsig Champion (summoning sick); Mutable Explorer (summoning sick); Tapped: Crabomination; Human
-  Hand: unknown card
   Library: 83 cards
   Command: (empty)
   Graveyard: Counterspell; River's Rebuke; Rottenmouth Viper; Zero Point Ballad
