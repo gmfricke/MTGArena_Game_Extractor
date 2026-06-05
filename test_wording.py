@@ -15,6 +15,8 @@ from mtga_extract_games import (
     append_target_phrase,
     available_resource_lines,
     base_cast_name,
+    build_card_name_colors,
+    build_card_name_pattern,
     card_is_land,
     card_is_nonland_permanent,
     colorize_transcript_line,
@@ -116,13 +118,71 @@ class WordingTests(unittest.TestCase):
         self.assertTrue(should_color_output("auto", True))
         self.assertTrue(should_color_output("always", False))
         self.assertIn("\033[36m", colorize_transcript_line("I cast Giada", True))
-        self.assertIn("\033[1;97mPlains", colorize_land_names("I play Plains", True))
-        self.assertIn("\033[1;90mSwamp", colorize_land_names("Opponent plays Swamp", True))
+        self.assertIn("\033[1;37mPlains", colorize_land_names("I play Plains", True))
+        self.assertIn("\033[90mSwamp", colorize_land_names("Opponent plays Swamp", True))
         self.assertIn(
-            "\033[1;37mNykthos, Shrine to Nyx",
+            "\033[37mNykthos, Shrine to Nyx",
             colorize_land_names("I play Nykthos, Shrine to Nyx", True),
         )
+        self.assertIn(
+            "\033[1;33mWind-Scarred Crag",
+            colorize_land_names("Opponent plays Wind-Scarred Crag", True),
+        )
+        self.assertIn(
+            "\033[1;32mSnow-Covered Forest",
+            colorize_land_names("I play Snow-Covered Forest", True),
+        )
         self.assertEqual(colorize_transcript_line("I cast Giada", False), "I cast Giada")
+
+    def test_card_name_color_helpers_use_card_metadata(self):
+        metadata = {
+            1: {
+                "name": "Giada, Font of Hope",
+                "type_numbers": {2},
+                "colors": {1},
+                "color_identity": {1},
+                "frame_colors": {1},
+            },
+            2: {
+                "name": "Empyrean Eagle",
+                "type_numbers": {2},
+                "colors": {1, 2},
+                "color_identity": {1, 2},
+                "frame_colors": {1, 2},
+            },
+            3: {
+                "name": "Ornithopter",
+                "type_numbers": {1, 2},
+                "colors": set(),
+                "color_identity": set(),
+                "frame_colors": set(),
+            },
+            4: {
+                "name": "Wind-Scarred Crag",
+                "type_numbers": {5},
+                "colors": set(),
+                "color_identity": {1, 4},
+                "frame_colors": {1, 4},
+            },
+        }
+        name_colors = build_card_name_colors(metadata)
+        name_pattern = build_card_name_pattern(name_colors)
+        line = colorize_transcript_line(
+            "I attack Opponent with Giada, Font of Hope and Empyrean Eagle",
+            True,
+            name_colors,
+            name_pattern,
+        )
+        self.assertIn("\033[1;37mGiada, Font of Hope", line)
+        self.assertIn("\033[1;33mEmpyrean Eagle", line)
+        self.assertIn(
+            "\033[37mOrnithopter",
+            colorize_transcript_line("Opponent casts Ornithopter", True, name_colors, name_pattern),
+        )
+        self.assertIn(
+            "\033[1;33mWind-Scarred Crag",
+            colorize_transcript_line("Opponent plays Wind-Scarred Crag", True, name_colors, name_pattern),
+        )
 
     def test_turn_state_uses_possessive_labels(self):
         self.assertEqual(state_zone_label("Me", "board"), "My board")

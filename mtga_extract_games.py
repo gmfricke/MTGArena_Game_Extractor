@@ -94,9 +94,22 @@ def load_grp_id_to_metadata(carddb_path: Path) -> dict[int, dict]:
     if not {"Cards", "Localizations_enUS"}.issubset(tables):
         con.close()
         return {}
+    cur.execute("PRAGMA table_info(Cards)")
+    card_columns = {row[1] for row in cur.fetchall()}
+    colors_expr = "c.Colors" if "Colors" in card_columns else "''"
+    color_identity_expr = "c.ColorIdentity" if "ColorIdentity" in card_columns else "''"
+    frame_colors_expr = "c.FrameColors" if "FrameColors" in card_columns else "''"
 
-    cur.execute("""
-        SELECT c.GrpId, l.Loc, l.Formatted, c.Types, c.AbilityIds
+    cur.execute(f"""
+        SELECT
+            c.GrpId,
+            l.Loc,
+            l.Formatted,
+            c.Types,
+            c.AbilityIds,
+            {colors_expr},
+            {color_identity_expr},
+            {frame_colors_expr}
         FROM Cards c
         JOIN Localizations_enUS l
           ON c.TitleId = l.LocId
@@ -105,13 +118,25 @@ def load_grp_id_to_metadata(carddb_path: Path) -> dict[int, dict]:
     """)
     metadata = {}
     ability_ids_by_grp = {}
-    for grp_id, name, _formatted, type_text, ability_text in cur.fetchall():
+    for (
+        grp_id,
+        name,
+        _formatted,
+        type_text,
+        ability_text,
+        colors_text,
+        color_identity_text,
+        frame_colors_text,
+    ) in cur.fetchall():
         grp_id = int(grp_id)
         if grp_id not in metadata:
             ability_ids = parse_carddb_int_list(ability_text)
             metadata[grp_id] = {
                 "name": name,
                 "type_numbers": set(parse_carddb_int_list(type_text)),
+                "colors": set(parse_carddb_int_list(colors_text)),
+                "color_identity": set(parse_carddb_int_list(color_identity_text)),
+                "frame_colors": set(parse_carddb_int_list(frame_colors_text)),
                 "ability_texts": [],
                 "play_mechanics": [],
             }
@@ -521,6 +546,20 @@ def game_has_commanders(game_info: dict | None) -> bool:
 
 
 ANSI_RESET = "\033[0m"
+WHITE_MANA_COLOR = "\033[1;37m"
+BLUE_MANA_COLOR = "\033[1;34m"
+BLACK_MANA_COLOR = "\033[90m"
+RED_MANA_COLOR = "\033[1;31m"
+GREEN_MANA_COLOR = "\033[1;32m"
+MULTICOLOUR_MANA_COLOR = "\033[1;33m"
+COLOURLESS_MANA_COLOR = "\033[37m"
+MANA_COLORS = {
+    1: WHITE_MANA_COLOR,
+    2: BLUE_MANA_COLOR,
+    3: BLACK_MANA_COLOR,
+    4: RED_MANA_COLOR,
+    5: GREEN_MANA_COLOR,
+}
 TRANSCRIPT_COLORS = {
     "me": "\033[36m",
     "opponent": "\033[35m",
@@ -534,12 +573,17 @@ TRANSCRIPT_COLORS = {
     "state_detail": "\033[2m",
 }
 LAND_COLORS = {
-    "Plains": "\033[1;97m",
-    "Island": "\033[1;34m",
-    "Swamp": "\033[1;90m",
-    "Mountain": "\033[1;31m",
-    "Forest": "\033[1;32m",
-    "Wastes": "\033[1;37m",
+    "Plains": WHITE_MANA_COLOR,
+    "Island": BLUE_MANA_COLOR,
+    "Swamp": BLACK_MANA_COLOR,
+    "Mountain": RED_MANA_COLOR,
+    "Forest": GREEN_MANA_COLOR,
+    "Snow-Covered Plains": WHITE_MANA_COLOR,
+    "Snow-Covered Island": BLUE_MANA_COLOR,
+    "Snow-Covered Swamp": BLACK_MANA_COLOR,
+    "Snow-Covered Mountain": RED_MANA_COLOR,
+    "Snow-Covered Forest": GREEN_MANA_COLOR,
+    "Wastes": COLOURLESS_MANA_COLOR,
 }
 COLORLESS_LAND_NAMES = {
     "Cavern of Souls",
@@ -548,17 +592,25 @@ COLORLESS_LAND_NAMES = {
     "Nykthos, Shrine to Nyx",
     "Reliquary Tower",
 }
+MULTICOLOUR_LAND_NAMES = {
+    "Wind-Scarred Crag",
+}
+DEFAULT_CARD_NAME_COLORS = {
+    **LAND_COLORS,
+    **{name: COLOURLESS_MANA_COLOR for name in COLORLESS_LAND_NAMES},
+    **{name: MULTICOLOUR_MANA_COLOR for name in MULTICOLOUR_LAND_NAMES},
+}
 LAND_NAME_PATTERN = re.compile(
-    r"\b("
+    r"(?<!\w)("
     + "|".join(
         re.escape(name)
         for name in sorted(
-            [*LAND_COLORS, *COLORLESS_LAND_NAMES],
+            DEFAULT_CARD_NAME_COLORS,
             key=len,
             reverse=True,
         )
     )
-    + r")\b"
+    + r")(?!\w)"
 )
 
 
@@ -628,31 +680,102 @@ def transcript_line_style(line: str) -> str | None:
     return None
 
 
-def color_for_land_name(name: str) -> str:
-    """Return the ANSI colour for a known land name."""
-    return LAND_COLORS.get(name) or "\033[1;37m"
+def mana_color_for_values(values) -> str:
+    """Return a readable ANSI colour for Arena mana colour values."""
+    colors = {value for value in values if value in MANA_COLORS}
+    if len(colors) == 1:
+        return MANA_COLORS[next(iter(colors))]
+    if len(colors) > 1:
+        return MULTICOLOUR_MANA_COLOR
+    return COLOURLESS_MANA_COLOR
 
 
-def colorize_land_names(line: str, color_enabled: bool, outer_color: str | None = None) -> str:
-    """Apply mana-style colours to known land names in a transcript line."""
+def build_card_name_colors(card_metadata: dict[int, dict]) -> dict[str, str]:
+    """Build transcript colour accents for known creature and land names."""
+    name_colors = dict(DEFAULT_CARD_NAME_COLORS)
+    for metadata in card_metadata.values():
+        name = metadata.get("name")
+        if not name:
+            continue
+        type_numbers = set(metadata.get("type_numbers") or [])
+        # Arena card types: 2 = creature, 5 = land.
+        is_creature = 2 in type_numbers
+        is_land = 5 in type_numbers
+        if not is_creature and not is_land:
+            continue
+        color_values = (
+            metadata.get("colors")
+            or metadata.get("color_identity")
+            or metadata.get("frame_colors")
+            or set()
+        )
+        if is_land:
+            color_values = (
+                metadata.get("color_identity")
+                or metadata.get("frame_colors")
+                or metadata.get("colors")
+                or set()
+            )
+        name_colors[name] = mana_color_for_values(color_values)
+    return name_colors
+
+
+def build_card_name_pattern(name_colors: dict[str, str]) -> re.Pattern | None:
+    """Compile a longest-name-first matcher for known card names."""
+    if not name_colors:
+        return None
+    return re.compile(
+        r"(?<!\w)("
+        + "|".join(re.escape(name) for name in sorted(name_colors, key=len, reverse=True))
+        + r")(?!\w)"
+    )
+
+
+def color_for_card_name(name: str, name_colors: dict[str, str] | None = None) -> str:
+    """Return the ANSI colour for a known card name."""
+    if name_colors and name in name_colors:
+        return name_colors[name]
+    return DEFAULT_CARD_NAME_COLORS.get(name) or COLOURLESS_MANA_COLOR
+
+
+def colorize_card_names(
+    line: str,
+    color_enabled: bool,
+    outer_color: str | None = None,
+    name_colors: dict[str, str] | None = None,
+    name_pattern: re.Pattern | None = None,
+) -> str:
+    """Apply mana-style colours to known card names in a transcript line."""
     if not color_enabled:
         return line
+    name_colors = name_colors or DEFAULT_CARD_NAME_COLORS
+    name_pattern = name_pattern or LAND_NAME_PATTERN
 
     def replace(match):
         name = match.group(0)
         if outer_color:
-            return f"{ANSI_RESET}{color_for_land_name(name)}{name}{ANSI_RESET}{outer_color}"
-        return f"{color_for_land_name(name)}{name}{ANSI_RESET}"
+            return f"{ANSI_RESET}{color_for_card_name(name, name_colors)}{name}{ANSI_RESET}{outer_color}"
+        return f"{color_for_card_name(name, name_colors)}{name}{ANSI_RESET}"
 
-    return LAND_NAME_PATTERN.sub(replace, line)
+    return name_pattern.sub(replace, line)
 
 
-def colorize_transcript_line(line: str, color_enabled: bool) -> str:
+def colorize_land_names(line: str, color_enabled: bool, outer_color: str | None = None) -> str:
+    """Apply mana-style colours to the default known land names in a transcript line."""
+    return colorize_card_names(line, color_enabled, outer_color)
+
+
+def colorize_transcript_line(
+    line: str,
+    color_enabled: bool,
+    name_colors: dict[str, str] | None = None,
+    name_pattern: re.Pattern | None = None,
+) -> str:
     """Apply ANSI color to transcript syntax when requested."""
     if not color_enabled:
         return line
     color = TRANSCRIPT_COLORS.get(transcript_line_style(line))
-    line = colorize_land_names(line, color_enabled, color)
+    line = colorize_card_names(line, color_enabled, color, name_colors, name_pattern)
     if not color:
         return line
     return f"{color}{line.removeprefix(ANSI_RESET)}{ANSI_RESET}"
@@ -1371,6 +1494,8 @@ def extract_game_plays(
     card_metadata = card_metadata or {}
     ability_texts = ability_texts or {}
     color_enabled = should_color_output(color_mode, sys.stdout.isatty())
+    card_name_colors = build_card_name_colors(card_metadata)
+    card_name_pattern = build_card_name_pattern(card_name_colors)
     subtype_names = enum_value_names.get("SubType") or {}
     counter_type_names = enum_value_names.get("CounterType") or {}
     choice_value_names = {
@@ -1431,7 +1556,15 @@ def extract_game_plays(
         if current_match_lines is not None:
             current_match_lines.append(line)
             if live:
-                print(colorize_transcript_line(line, color_enabled), flush=True)
+                print(
+                    colorize_transcript_line(
+                        line,
+                        color_enabled,
+                        card_name_colors,
+                        card_name_pattern,
+                    ),
+                    flush=True,
+                )
 
     def mark_postgame_payload(root):
         """Remember postgame account/course blobs that appear after GRE stops."""
@@ -3476,7 +3609,17 @@ def extract_game_plays(
         lines = remove_redundant_match_winner_lines(
             combine_adjacent_attack_lines(combine_duplicate_transcript_lines(match["lines"]))
         )
-        print("\n".join(colorize_transcript_line(line, color_enabled) for line in lines))
+        print(
+            "\n".join(
+                colorize_transcript_line(
+                    line,
+                    color_enabled,
+                    card_name_colors,
+                    card_name_pattern,
+                )
+                for line in lines
+            )
+        )
 
     if debug_grp_ids:
         print("\nDebug GrpId object windows:", file=sys.stderr)
