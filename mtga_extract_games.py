@@ -520,6 +520,14 @@ ANSI_RESET = "\033[0m"
 TRANSCRIPT_COLORS = {
     "me": "\033[36m",
     "opponent": "\033[35m",
+    "me_header": "\033[1;36m",
+    "opponent_header": "\033[1;35m",
+    "game_header": "\033[1m",
+    "metadata": "\033[2m",
+    "state": "\033[33m",
+    "result_me": "\033[1;32m",
+    "result_opponent": "\033[1;31m",
+    "state_detail": "\033[2m",
 }
 
 
@@ -534,6 +542,8 @@ def should_color_output(color_mode: str, stdout_is_tty: bool) -> bool:
 
 def transcript_line_perspective(line: str) -> str | None:
     """Classify transcript lines that clearly belong to one player."""
+    if line.startswith(("  ", "    ")):
+        return None
     if line.startswith("=== Turn ") and line.endswith(": Me ==="):
         return "me"
     if line.startswith("=== Turn ") and line.endswith(": Opponent ==="):
@@ -553,12 +563,45 @@ def transcript_line_perspective(line: str) -> str | None:
     return None
 
 
+def transcript_line_style(line: str) -> str | None:
+    """Return the color style name for a transcript line."""
+    if not line:
+        return None
+    if line.startswith("===== GAME "):
+        return "game_header"
+    if line.startswith("Game type:"):
+        return "metadata"
+    if line.startswith("=== Turn ") and line.endswith(": Me ==="):
+        return "me_header"
+    if line.startswith("=== Turn ") and line.endswith(": Opponent ==="):
+        return "opponent_header"
+    if line == "My side:":
+        return "me_header"
+    if line == "Opponent:":
+        return "opponent_header"
+    if line.startswith(("  ", "    ")):
+        return "state_detail"
+    if line.startswith(("Active Effects:", "Current State:", "Available Resources:")):
+        return "state"
+    if line.startswith(("Winner: Me", "Match winner: Me")):
+        return "result_me"
+    if line.startswith(("Winner: Opponent", "Match winner: Opponent")):
+        return "result_opponent"
+    if line.startswith("Match result:"):
+        return "result_me" if "Opponent conceded" in line else "result_opponent"
+    perspective = transcript_line_perspective(line)
+    if perspective:
+        return perspective
+    if "trigger:" in line or "ability:" in line or line.startswith("Commander damage:"):
+        return "state"
+    return None
+
+
 def colorize_transcript_line(line: str, color_enabled: bool) -> str:
-    """Apply ANSI color to clearly attributed player transcript lines."""
+    """Apply ANSI color to transcript syntax when requested."""
     if not color_enabled:
         return line
-    perspective = transcript_line_perspective(line)
-    color = TRANSCRIPT_COLORS.get(perspective)
+    color = TRANSCRIPT_COLORS.get(transcript_line_style(line))
     if not color:
         return line
     return f"{color}{line}{ANSI_RESET}"
@@ -3439,7 +3482,7 @@ def main() -> None:
     python3 mtga_extract_games.py --live --no-resolves
 
   Highlight my lines and opponent lines in a terminal:
-    python3 mtga_extract_games.py --last 1 --color always
+    python3 mtga_extract_games.py --last 1 --colour always
 
 macOS path examples:
   LOG="$HOME/Library/Logs/Wizards Of The Coast/MTGA/Player.log"
@@ -3564,10 +3607,12 @@ No pip install step is required; this script only uses Python's standard library
         help="print the current game from its start, then watch Player.log for new lines",
     )
     parser.add_argument(
+        "--colour",
         "--color",
+        dest="colour",
         choices=("never", "auto", "always"),
         default="never",
-        help="color clearly attributed Me/Opponent transcript lines; default: never",
+        help="colour transcript structure and clearly attributed Me/Opponent lines; default: never",
     )
     args = parser.parse_args()
 
@@ -3641,7 +3686,7 @@ No pip install step is required; this script only uses Python's standard library
         enum_value_names=enum_value_names,
         card_metadata=card_metadata,
         ability_texts=ability_texts,
-        color_mode=args.color,
+        color_mode=args.colour,
     )
 
 

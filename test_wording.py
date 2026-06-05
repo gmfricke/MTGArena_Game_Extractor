@@ -75,6 +75,7 @@ from mtga_extract_games import (
     subject_pronoun,
     should_color_output,
     transcript_line_perspective,
+    transcript_line_style,
 )
 
 
@@ -89,11 +90,24 @@ class WordingTests(unittest.TestCase):
     def test_transcript_line_color_helpers(self):
         self.assertEqual(transcript_line_perspective("I cast Giada, Font of Hope"), "me")
         self.assertEqual(transcript_line_perspective("My side:"), "me")
+        self.assertIsNone(transcript_line_perspective("  Hand: Plains"))
         self.assertEqual(
             transcript_line_perspective("Opponent casts Arcane Signet"),
             "opponent",
         )
         self.assertIsNone(transcript_line_perspective("Game type: Constructed Duel"))
+        self.assertEqual(transcript_line_style("===== GAME 1: MATCH abc ====="), "game_header")
+        self.assertEqual(transcript_line_style("Game type: Constructed Duel"), "metadata")
+        self.assertEqual(transcript_line_style("=== Turn 1: Me ==="), "me_header")
+        self.assertEqual(transcript_line_style("=== Turn 2: Opponent ==="), "opponent_header")
+        self.assertEqual(transcript_line_style("  Hand: Plains"), "state_detail")
+        self.assertEqual(transcript_line_style("Current State:"), "state")
+        self.assertEqual(
+            transcript_line_style("Bishop of Wings trigger: I gain 4 life (28)"),
+            "state",
+        )
+        self.assertEqual(transcript_line_style("Winner: Me"), "result_me")
+        self.assertEqual(transcript_line_style("Winner: Opponent"), "result_opponent")
         self.assertFalse(should_color_output("never", True))
         self.assertFalse(should_color_output("auto", False))
         self.assertTrue(should_color_output("auto", True))
