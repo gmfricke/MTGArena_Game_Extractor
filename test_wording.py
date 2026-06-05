@@ -118,6 +118,10 @@ class WordingTests(unittest.TestCase):
         self.assertTrue(should_color_output("auto", True))
         self.assertTrue(should_color_output("always", False))
         self.assertIn("\033[36m", colorize_transcript_line("I cast Giada", True))
+        self.assertNotIn(
+            "\033[1;34mTurn",
+            colorize_transcript_line("=== Turn 1: Me ===", True),
+        )
         self.assertIn("\033[1;37mPlains", colorize_land_names("I play Plains", True))
         self.assertIn("\033[90mSwamp", colorize_land_names("Opponent plays Swamp", True))
         self.assertIn(
@@ -162,6 +166,20 @@ class WordingTests(unittest.TestCase):
                 "color_identity": {1, 4},
                 "frame_colors": {1, 4},
             },
+            5: {
+                "name": "Goldvein Pick",
+                "type_numbers": {1},
+                "colors": set(),
+                "color_identity": set(),
+                "frame_colors": set(),
+            },
+            6: {
+                "name": "Valorous Stance",
+                "type_numbers": {4},
+                "colors": {1},
+                "color_identity": {1},
+                "frame_colors": {1},
+            },
         }
         name_colors = build_card_name_colors(metadata)
         name_pattern = build_card_name_pattern(name_colors)
@@ -192,6 +210,19 @@ class WordingTests(unittest.TestCase):
             name_pattern,
         )
         self.assertIn("\033[1;35mWind-Scarred Crag", wind_crag)
+        self.assertIn(
+            "\033[37mGoldvein Pick",
+            colorize_transcript_line("Opponent casts Goldvein Pick", True, name_colors, name_pattern),
+        )
+        self.assertIn(
+            "\033[1;37mValorous Stance",
+            colorize_transcript_line(
+                "Opponent casts Valorous Stance targeting Giada, Font of Hope",
+                True,
+                name_colors,
+                name_pattern,
+            ),
+        )
 
     def test_turn_state_uses_possessive_labels(self):
         self.assertEqual(state_zone_label("Me", "board"), "My board")

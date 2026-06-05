@@ -204,7 +204,7 @@ Use this to add terminal colours:
 python3 mtga_extract_games.py --last 1 --no-resolves --colour always
 ```
 
-The colour mode highlights transcript structure, Me/Opponent lines, results, and known land/creature names. Land and creature names use MTG-style colour accents from the Arena card database when possible. Multicolour cards use a conservative ANSI blend such as cyan for white-blue, purple for blue-red, and pink/bright magenta for white-red. Colourless cards and neutral list words such as `and` use neutral gray. `--color` is accepted as an alias, but the documented spelling is `--colour`.
+The colour mode highlights transcript structure, Me/Opponent lines, results, and known card names. Card names use MTG-style colour accents from the Arena card database when possible. Lands use colour identity, while spells and nonland permanents use printed colours. Multicolour cards use a conservative ANSI blend such as cyan for white-blue, purple for blue-red, and pink/bright magenta for white-red. Colourless cards, artifacts with no printed colour, and neutral list words such as `and` use neutral gray. `--color` is accepted as an alias, but the documented spelling is `--colour`.
 
 Use this to save output to a text file:
 

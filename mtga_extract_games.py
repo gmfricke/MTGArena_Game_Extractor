@@ -702,29 +702,30 @@ def blended_mana_color_for_values(values) -> str:
 
 
 def build_card_name_colors(card_metadata: dict[int, dict]) -> dict[str, str | tuple[int, ...]]:
-    """Build transcript colour accents for known creature and land names."""
+    """Build transcript colour accents for known card names."""
     name_colors = dict(DEFAULT_CARD_NAME_COLORS)
     for metadata in card_metadata.values():
         name = metadata.get("name")
         if not name:
             continue
         type_numbers = set(metadata.get("type_numbers") or [])
-        # Arena card types: 2 = creature, 5 = land.
-        is_creature = 2 in type_numbers
-        is_land = 5 in type_numbers
-        if not is_creature and not is_land:
+        if not type_numbers:
             continue
-        color_values = (
-            metadata.get("colors")
-            or metadata.get("color_identity")
-            or metadata.get("frame_colors")
-            or set()
-        )
+        # Arena card type 5 = land. Lands usually have no printed colours, so
+        # use colour identity/frame colours before falling back to Colors.
+        is_land = 5 in type_numbers
         if is_land:
             color_values = (
                 metadata.get("color_identity")
                 or metadata.get("frame_colors")
                 or metadata.get("colors")
+                or set()
+            )
+        else:
+            color_values = (
+                metadata.get("colors")
+                or metadata.get("frame_colors")
+                or metadata.get("color_identity")
                 or set()
             )
         name_colors[name] = blended_mana_color_for_values(color_values)
@@ -812,7 +813,8 @@ def colorize_transcript_line(
     if not color_enabled:
         return line
     color = TRANSCRIPT_COLORS.get(transcript_line_style(line))
-    line = colorize_card_names(line, color_enabled, color, name_colors, name_pattern)
+    if transcript_line_style(line) not in {"game_header", "metadata", "me_header", "opponent_header"}:
+        line = colorize_card_names(line, color_enabled, color, name_colors, name_pattern)
     if not color:
         return line
     return f"{color}{line.removeprefix(ANSI_RESET)}{ANSI_RESET}"
