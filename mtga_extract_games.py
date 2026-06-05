@@ -1075,9 +1075,14 @@ def phrase_commander_cast_note(cast_count: int) -> str:
 def phrase_commander_damage(source: str, damage: int, target_label: str, total: int) -> str:
     """Render commander damage with the running total against a player."""
     return (
-        f"Commander damage: {source} deals {damage} to "
+        f"Commander damage: {source} deals {damage} damage to "
         f"{object_pronoun(target_label)} ({total} total)"
     )
+
+
+def phrase_damage(source: str | None, damage: int, target: str) -> str:
+    """Render a direct damage event without adding rules interpretation."""
+    return f"{source or 'A source'} deals {damage} damage to {target}"
 
 
 def phrase_player_counter_change(label: str, counter_name: str, amount: int, total: int) -> str:
@@ -1844,6 +1849,7 @@ def extract_game_plays(
     seen_choices = set()
     seen_state_events = set()
     seen_commander_damage = set()
+    seen_damage_events = set()
     seen_no_combat_damage = set()
     seen_enters_attacking = set()
     remembered_object_labels = {}
@@ -2057,6 +2063,7 @@ def extract_game_plays(
         clear_all(
             seen_combat,
             seen_commander_damage,
+            seen_damage_events,
             seen_no_combat_damage,
             seen_enters_attacking,
             ability_trigger_ids,
@@ -3452,21 +3459,14 @@ def extract_game_plays(
             remove_active_effects_with_prefix(("teferi_protection", seat))
             remove_active_effects_with_prefix(("teferi_life_total", seat))
 
-    def emit_commander_damage(ann, gsm):
-        """Track combat damage from commanders to players when Arena exposes it."""
-        details = detail_dict(ann.get("details"))
-        damage = details.get("damage")
+    def damage_annotation_commander_info(ann, gsm):
+        """Return commander combat damage info for player targets, when applicable."""
         affected = ann.get("affectedIds") or []
         source_id = ann.get("affectorId")
-        if (
-            not isinstance(damage, int)
-            or damage <= 0
-            or not affected
-            or affected[0] not in (1, 2)
-        ):
-            return
+        if not affected or affected[0] not in (1, 2):
+            return None
         if gsm.get("turnInfo", {}).get("phase") != "Phase_Combat":
-            return
+            return None
 
         source = objects.get(source_id, {})
         source_seat = source.get("controllerSeatId") or source.get("ownerSeatId")
@@ -3480,9 +3480,20 @@ def extract_game_plays(
             or source_grp in commander_grps_by_seat.get(source_seat, set())
         )
         if not is_commander or source_seat is None:
-            return
+            return None
+        return source_id, source_seat, affected[0]
 
-        target_seat = affected[0]
+    def emit_commander_damage(ann, gsm):
+        """Track combat damage from commanders to players when Arena exposes it."""
+        details = detail_dict(ann.get("details"))
+        damage = details.get("damage")
+        if not isinstance(damage, int) or damage <= 0:
+            return
+        commander_info = damage_annotation_commander_info(ann, gsm)
+        if not commander_info:
+            return
+        source_id, source_seat, target_seat = commander_info
+
         key = (current_match, gsm.get("gameStateId"), ann.get("id"), source_id, target_seat)
         if key in seen_commander_damage:
             return
@@ -3491,6 +3502,30 @@ def extract_game_plays(
         total = commander_damage[(source_seat, target_seat)]
         flush_pending_event_groups()
         emit(phrase_commander_damage(card_label(source_id), damage, owner_label(target_seat), total))
+
+    def emit_damage(ann, gsm):
+        """Emit generic damage lines for player and permanent damage records."""
+        details = detail_dict(ann.get("details"))
+        damage = details.get("damage")
+        affected = ann.get("affectedIds") or []
+        source_id = ann.get("affectorId")
+        if not isinstance(damage, int) or damage <= 0 or not affected:
+            return
+        if damage_annotation_commander_info(ann, gsm):
+            return
+
+        target_id = affected[0]
+        key = (current_match, gsm.get("gameStateId"), ann.get("id"), source_id, target_id, damage)
+        if key in seen_damage_events:
+            return
+        seen_damage_events.add(key)
+
+        if target_id in (1, 2):
+            target = object_pronoun(owner_label(target_id))
+        else:
+            target = card_label(target_id)
+        flush_pending_event_groups()
+        emit(phrase_damage(source_label(source_id), damage, target))
 
     def emit_no_combat_damage(ann, gsm):
         """Report zero combat damage to players without guessing the prevention source."""
@@ -3726,6 +3761,7 @@ def extract_game_plays(
             emit_choice_result(ann, gsm)
         elif "AnnotationType_DamageDealt" in ann_types:
             emit_commander_damage(ann, gsm)
+            emit_damage(ann, gsm)
             emit_infect_damage(ann, gsm)
             emit_no_combat_damage(ann, gsm)
         elif (

@@ -29,11 +29,17 @@ Lyra Dawnbringer blocks Steel Seraph
 Enduring Angel blocks Rottenmouth Viper
 
 -- Combat - first strike damage --
+Lyra Dawnbringer deals 6 damage to Steel Seraph
+Enduring Angel deals 6 damage to Rottenmouth Viper
 I gain 12 life (27)
 
--- Postcombat main --
+-- Combat - damage --
 My Steel Seraph dies
 Opponent's Rottenmouth Viper dies
+Crabomination deals 5 damage to Warrior
+Warrior deals 1 damage to Crabomination
+
+-- Postcombat main --
 Warrior dies
 Opponent chooses Black for Nykthos, Shrine to Nyx (color)
 Opponent casts Kotis, Sibsig Champion from command zone; commander cast #2; next commander tax +4
@@ -71,11 +77,14 @@ I cast Vanquisher's Banner
 I attack Opponent with Giada, Font of Hope; Lyra Dawnbringer; and Enduring Angel
 
 -- Combat - first strike damage --
+Lyra Dawnbringer deals 7 damage to Opponent
+Enduring Angel deals 7 damage to Opponent
 Opponent loses 14 life (10)
 I gain 14 life (41)
 
 -- Combat - damage --
-Commander damage: Giada, Font of Hope deals 5 to Opponent (7 total)
+Commander damage: Giada, Font of Hope deals 5 damage to Opponent (7 total)
+Enduring Angel deals 7 damage to Opponent
 Opponent loses 12 life (-2)
 I gain 12 life (53)
 

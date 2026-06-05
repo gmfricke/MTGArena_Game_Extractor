@@ -44,6 +44,7 @@ from mtga_extract_games import (
     phrase_commander_cast_note,
     phrase_commander_damage,
     phrase_concede_result,
+    phrase_damage,
     phrase_choice_value,
     phrase_death,
     phrase_enters_attacking,
@@ -883,11 +884,15 @@ class WordingTests(unittest.TestCase):
         )
         self.assertEqual(
             phrase_commander_damage("Giada, Font of Hope", 4, "Opponent", 8),
-            "Commander damage: Giada, Font of Hope deals 4 to Opponent (8 total)",
+            "Commander damage: Giada, Font of Hope deals 4 damage to Opponent (8 total)",
         )
         self.assertEqual(
             phrase_commander_damage("Zacama, Primal Calamity", 7, "Me", 7),
-            "Commander damage: Zacama, Primal Calamity deals 7 to me (7 total)",
+            "Commander damage: Zacama, Primal Calamity deals 7 damage to me (7 total)",
+        )
+        self.assertEqual(
+            phrase_damage("Lyra Dawnbringer", 6, "Steel Seraph"),
+            "Lyra Dawnbringer deals 6 damage to Steel Seraph",
         )
         self.assertEqual(object_pronoun("Me"), "me")
 
