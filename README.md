@@ -210,6 +210,8 @@ The default archive is `./mtga_seen_games.sqlite3` in the current directory. You
 python3 mtga_extract_games.py --all --no-resolves --archive-db arena_games.sqlite3
 ```
 
+The archive keeps stable game identity and ordering separately from transcript text. The `games` table is keyed by Arena match ID, `transcripts` stores generated plain-text output, and `log_sources` records the log files seen during refreshes. This keeps the database usable if future versions add more transcript formats or metadata.
+
 For one-off raw-log debugging without updating or reading from the archive:
 
 ```bash

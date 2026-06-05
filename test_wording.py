@@ -446,6 +446,8 @@ class WordingTests(unittest.TestCase):
     def test_seen_games_archive_is_keyed_by_match_id(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "seen.sqlite3"
+            log_path = Path(tmpdir) / "Player.log"
+            log_path.write_text("{}", encoding="utf-8")
             matches = [
                 {
                     "number": 1,
@@ -461,25 +463,30 @@ class WordingTests(unittest.TestCase):
                 }
             ]
 
-            self.assertEqual(archive_seen_games(db_path, matches), (1, 0))
+            self.assertEqual(archive_seen_games(db_path, matches, [log_path]), (1, 0))
             matches[0]["number"] = 99
-            self.assertEqual(archive_seen_games(db_path, matches), (0, 1))
+            self.assertEqual(archive_seen_games(db_path, matches, [log_path]), (0, 1))
 
             con = sqlite3.connect(db_path)
             row = con.execute(
-                "SELECT match_id, archive_index, game_number, game_type, has_result, transcript FROM games"
+                """
+                SELECT g.match_id, g.archive_index, g.game_type, g.has_result, t.content
+                FROM games g
+                JOIN transcripts t ON t.game_id = g.id AND t.format = 'plain_text'
+                """
             ).fetchone()
             schema_version = con.execute("PRAGMA user_version").fetchone()[0]
+            source_count = con.execute("SELECT count(*) FROM log_sources").fetchone()[0]
             con.close()
 
             self.assertEqual(schema_version, 1)
+            self.assertEqual(source_count, 1)
             self.assertEqual(row[0], "match-1")
             self.assertEqual(row[1], 1)
-            self.assertEqual(row[2], 1)
-            self.assertEqual(row[3], "Game type: Constructed Duel (20 starting life)")
-            self.assertEqual(row[4], 1)
-            self.assertIn("===== GAME 1: MATCH match-1 =====", row[5])
-            self.assertIn("I attack Opponent with A and B", row[5])
+            self.assertEqual(row[2], "Game type: Constructed Duel (20 starting life)")
+            self.assertEqual(row[3], 1)
+            self.assertIn("===== GAME 1: MATCH match-1 =====", row[4])
+            self.assertIn("I attack Opponent with A and B", row[4])
 
             archived = archived_transcript_matches(db_path)
             self.assertEqual(archived[0]["number"], 1)
@@ -488,6 +495,50 @@ class WordingTests(unittest.TestCase):
 
     def test_default_archive_db_path_uses_current_directory(self):
         self.assertEqual(default_archive_db_path(), Path("mtga_seen_games.sqlite3"))
+
+    def test_archive_schema_migrates_legacy_transcript_table(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "legacy.sqlite3"
+            con = sqlite3.connect(db_path)
+            con.execute("""
+                CREATE TABLE games (
+                    match_id TEXT PRIMARY KEY,
+                    archive_index INTEGER UNIQUE,
+                    game_number INTEGER NOT NULL,
+                    game_type TEXT,
+                    has_result INTEGER NOT NULL,
+                    line_count INTEGER NOT NULL,
+                    transcript TEXT NOT NULL,
+                    first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            con.execute(
+                """
+                INSERT INTO games (
+                    match_id, archive_index, game_number, game_type,
+                    has_result, line_count, transcript
+                )
+                VALUES ('legacy-match', 7, 7, 'Game type: Test', 1, 2, ?)
+                """,
+                ("===== GAME 7: MATCH legacy-match =====\nWinner: Me",),
+            )
+            con.commit()
+            con.close()
+
+            archived = archived_transcript_matches(db_path)
+
+            self.assertEqual(archived[0]["number"], 7)
+            self.assertEqual(archived[0]["match_id"], "legacy-match")
+            self.assertIn("Winner: Me", archived[0]["lines"])
+
+            con = sqlite3.connect(db_path)
+            tables = {
+                row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            self.assertIn("games_legacy_v0", tables)
+            self.assertEqual(con.execute("SELECT count(*) FROM transcripts").fetchone()[0], 1)
+            con.close()
 
     def test_path_resolution_uses_environment_paths(self):
         with tempfile.TemporaryDirectory() as tmpdir:

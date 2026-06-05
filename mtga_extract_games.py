@@ -1535,38 +1535,133 @@ def ensure_archive_schema(con) -> None:
             f"Archive database schema version {current_version} is newer than "
             f"this program supports ({ARCHIVE_SCHEMA_VERSION})."
         )
+
+    old_games = []
+    existing_tables = {
+        row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    if "games" in existing_tables:
+        columns = {row[1] for row in con.execute("PRAGMA table_info(games)")}
+        if "transcript" in columns:
+            old_games = list(
+                con.execute(
+                    """
+                    SELECT
+                        match_id,
+                        COALESCE(archive_index, game_number),
+                        game_type,
+                        has_result,
+                        line_count,
+                        transcript,
+                        first_seen_at,
+                        last_seen_at
+                    FROM games
+                    ORDER BY COALESCE(archive_index, game_number), first_seen_at
+                    """
+                )
+            )
+            con.execute("ALTER TABLE games RENAME TO games_legacy_v0")
+
     con.execute("""
         CREATE TABLE IF NOT EXISTS games (
-            match_id TEXT PRIMARY KEY,
-            archive_index INTEGER UNIQUE,
-            game_number INTEGER NOT NULL,
+            id INTEGER PRIMARY KEY,
+            match_id TEXT NOT NULL UNIQUE,
+            archive_index INTEGER NOT NULL UNIQUE,
             game_type TEXT,
             has_result INTEGER NOT NULL,
-            line_count INTEGER NOT NULL,
-            transcript TEXT NOT NULL,
             first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    columns = {row[1] for row in con.execute("PRAGMA table_info(games)")}
-    if "archive_index" not in columns:
-        con.execute("ALTER TABLE games ADD COLUMN archive_index INTEGER")
-        rows = list(con.execute("SELECT match_id FROM games ORDER BY game_number, first_seen_at"))
-        for index, (match_id,) in enumerate(rows, 1):
-            con.execute(
-                "UPDATE games SET archive_index = ? WHERE match_id = ?",
-                (index, match_id),
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS transcripts (
+            id INTEGER PRIMARY KEY,
+            game_id INTEGER NOT NULL,
+            format TEXT NOT NULL DEFAULT 'plain_text',
+            parser_version TEXT,
+            line_count INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(game_id, format),
+            FOREIGN KEY(game_id) REFERENCES games(id) ON DELETE CASCADE
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS log_sources (
+            id INTEGER PRIMARY KEY,
+            path TEXT NOT NULL UNIQUE,
+            size_bytes INTEGER,
+            modified_at REAL,
+            first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS games_archive_index_idx ON games(archive_index)")
+    con.execute("CREATE INDEX IF NOT EXISTS transcripts_game_id_idx ON transcripts(game_id)")
+
+    for (
+        match_id,
+        archive_index,
+        game_type,
+        has_result,
+        line_count,
+        transcript,
+        first_seen_at,
+        last_seen_at,
+    ) in old_games:
+        con.execute(
+            """
+            INSERT OR IGNORE INTO games (
+                match_id, archive_index, game_type, has_result, first_seen_at, last_seen_at
             )
-        con.execute("CREATE UNIQUE INDEX IF NOT EXISTS games_archive_index_idx ON games(archive_index)")
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (match_id, archive_index, game_type, has_result, first_seen_at, last_seen_at),
+        )
+        game_id = con.execute("SELECT id FROM games WHERE match_id = ?", (match_id,)).fetchone()[0]
+        con.execute(
+            """
+            INSERT OR REPLACE INTO transcripts (
+                game_id, format, parser_version, line_count, content, created_at, updated_at
+            )
+            VALUES (?, 'plain_text', NULL, ?, ?, ?, ?)
+            """,
+            (game_id, line_count, transcript, first_seen_at, last_seen_at),
+        )
     con.execute(f"PRAGMA user_version = {ARCHIVE_SCHEMA_VERSION}")
+    con.commit()
 
 
-def archive_seen_games(db_path: Path, matches: list[dict]) -> tuple[int, int]:
+def archive_seen_games(
+    db_path: Path,
+    matches: list[dict],
+    log_paths: list[Path] | None = None,
+) -> tuple[int, int]:
     """Store parsed transcripts by match id and return inserted/updated counts."""
     db_path = db_path.expanduser()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(db_path)
     ensure_archive_schema(con)
+
+    for log_path in log_paths or []:
+        expanded = log_path.expanduser()
+        try:
+            stat = expanded.stat()
+        except FileNotFoundError:
+            continue
+        con.execute(
+            """
+            INSERT INTO log_sources (path, size_bytes, modified_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(path) DO UPDATE SET
+                size_bytes=excluded.size_bytes,
+                modified_at=excluded.modified_at,
+                last_seen_at=CURRENT_TIMESTAMP
+            """,
+            (str(expanded), stat.st_size, stat.st_mtime),
+        )
+
     existing = {}
     if matches:
         existing = {
@@ -1596,27 +1691,38 @@ def archive_seen_games(db_path: Path, matches: list[dict]) -> tuple[int, int]:
         con.execute(
             """
             INSERT INTO games (
-                match_id, archive_index, game_number, game_type, has_result, line_count, transcript
+                match_id, archive_index, game_type, has_result
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(match_id) DO UPDATE SET
-                archive_index=games.archive_index,
-                game_number=games.archive_index,
                 game_type=excluded.game_type,
                 has_result=excluded.has_result,
-                line_count=excluded.line_count,
-                transcript=excluded.transcript,
                 last_seen_at=CURRENT_TIMESTAMP
             """,
             (
                 match["match_id"],
                 archive_index,
-                archive_index,
                 game_type,
                 1 if match.get("has_result") else 0,
-                len(lines),
-                transcript,
             ),
+        )
+        game_id = con.execute(
+            "SELECT id FROM games WHERE match_id = ?",
+            (match["match_id"],),
+        ).fetchone()[0]
+        con.execute(
+            """
+            INSERT INTO transcripts (
+                game_id, format, parser_version, line_count, content
+            )
+            VALUES (?, 'plain_text', ?, ?, ?)
+            ON CONFLICT(game_id, format) DO UPDATE SET
+                parser_version=excluded.parser_version,
+                line_count=excluded.line_count,
+                content=excluded.content,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (game_id, ARCHIVE_SCHEMA_VERSION, len(lines), transcript),
         )
         if match["match_id"] in existing:
             updated += 1
@@ -1634,8 +1740,9 @@ def archived_transcript_matches(db_path: Path) -> list[dict]:
     rows = list(
         con.execute(
             """
-            SELECT archive_index, match_id, has_result, transcript
-            FROM games
+            SELECT g.archive_index, g.match_id, g.has_result, t.content
+            FROM games g
+            JOIN transcripts t ON t.game_id = g.id AND t.format = 'plain_text'
             ORDER BY archive_index
             """
         )
@@ -3768,7 +3875,7 @@ def extract_game_plays(
             print(f"{count:5d} {type_text}{cat_text} sample={sample}", file=sys.stderr)
 
     if archive_db_path:
-        inserted, updated = archive_seen_games(archive_db_path, transcript_matches)
+        inserted, updated = archive_seen_games(archive_db_path, transcript_matches, log_paths)
         print(
             f"Archived {inserted} new and {updated} existing game(s) to {archive_db_path.expanduser()}",
             file=sys.stderr,
