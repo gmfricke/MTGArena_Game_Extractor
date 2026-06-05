@@ -551,7 +551,6 @@ BLUE_MANA_COLOR = "\033[1;34m"
 BLACK_MANA_COLOR = "\033[90m"
 RED_MANA_COLOR = "\033[1;31m"
 GREEN_MANA_COLOR = "\033[1;32m"
-MULTICOLOUR_MANA_COLOR = "\033[1;33m"
 COLOURLESS_MANA_COLOR = "\033[37m"
 MANA_COLORS = {
     1: WHITE_MANA_COLOR,
@@ -559,6 +558,18 @@ MANA_COLORS = {
     3: BLACK_MANA_COLOR,
     4: RED_MANA_COLOR,
     5: GREEN_MANA_COLOR,
+}
+MULTICOLOUR_MANA_COLORS = {
+    (1, 2): "\033[1;36m",
+    (1, 3): "\033[1;90m",
+    (1, 4): "\033[1;33m",
+    (1, 5): "\033[1;32m",
+    (2, 3): "\033[35m",
+    (2, 4): "\033[1;35m",
+    (2, 5): "\033[36m",
+    (3, 4): "\033[31m",
+    (3, 5): "\033[32m",
+    (4, 5): "\033[33m",
 }
 TRANSCRIPT_COLORS = {
     "me": "\033[36m",
@@ -592,13 +603,13 @@ COLORLESS_LAND_NAMES = {
     "Nykthos, Shrine to Nyx",
     "Reliquary Tower",
 }
-MULTICOLOUR_LAND_NAMES = {
-    "Wind-Scarred Crag",
+MULTICOLOUR_LAND_COLORS = {
+    "Wind-Scarred Crag": (1, 4),
 }
 DEFAULT_CARD_NAME_COLORS = {
-    **LAND_COLORS,
-    **{name: COLOURLESS_MANA_COLOR for name in COLORLESS_LAND_NAMES},
-    **{name: MULTICOLOUR_MANA_COLOR for name in MULTICOLOUR_LAND_NAMES},
+    **{name: (color,) for name, color in LAND_COLORS.items()},
+    **{name: (COLOURLESS_MANA_COLOR,) for name in COLORLESS_LAND_NAMES},
+    **{name: colors for name, colors in MULTICOLOUR_LAND_COLORS.items()},
 }
 LAND_NAME_PATTERN = re.compile(
     r"(?<!\w)("
@@ -680,17 +691,17 @@ def transcript_line_style(line: str) -> str | None:
     return None
 
 
-def mana_color_for_values(values) -> str:
-    """Return a readable ANSI colour for Arena mana colour values."""
-    colors = {value for value in values if value in MANA_COLORS}
+def blended_mana_color_for_values(values) -> str:
+    """Return a readable ANSI colour blended from Arena mana colour values."""
+    colors = tuple(sorted(value for value in set(values) if value in MANA_COLORS))
+    if not colors:
+        return COLOURLESS_MANA_COLOR
     if len(colors) == 1:
-        return MANA_COLORS[next(iter(colors))]
-    if len(colors) > 1:
-        return MULTICOLOUR_MANA_COLOR
-    return COLOURLESS_MANA_COLOR
+        return MANA_COLORS[colors[0]]
+    return MULTICOLOUR_MANA_COLORS.get(colors, "\033[1;33m")
 
 
-def build_card_name_colors(card_metadata: dict[int, dict]) -> dict[str, str]:
+def build_card_name_colors(card_metadata: dict[int, dict]) -> dict[str, str | tuple[int, ...]]:
     """Build transcript colour accents for known creature and land names."""
     name_colors = dict(DEFAULT_CARD_NAME_COLORS)
     for metadata in card_metadata.values():
@@ -716,11 +727,11 @@ def build_card_name_colors(card_metadata: dict[int, dict]) -> dict[str, str]:
                 or metadata.get("colors")
                 or set()
             )
-        name_colors[name] = mana_color_for_values(color_values)
+        name_colors[name] = blended_mana_color_for_values(color_values)
     return name_colors
 
 
-def build_card_name_pattern(name_colors: dict[str, str]) -> re.Pattern | None:
+def build_card_name_pattern(name_colors: dict[str, str | tuple[int, ...]]) -> re.Pattern | None:
     """Compile a longest-name-first matcher for known card names."""
     if not name_colors:
         return None
@@ -731,18 +742,32 @@ def build_card_name_pattern(name_colors: dict[str, str]) -> re.Pattern | None:
     )
 
 
-def color_for_card_name(name: str, name_colors: dict[str, str] | None = None) -> str:
-    """Return the ANSI colour for a known card name."""
+def palette_for_card_name(
+    name: str,
+    name_colors: dict[str, str | tuple[int, ...]] | None = None,
+) -> tuple[str, ...]:
+    """Return the ANSI colour for a known card name as a one-item palette."""
     if name_colors and name in name_colors:
-        return name_colors[name]
-    return DEFAULT_CARD_NAME_COLORS.get(name) or COLOURLESS_MANA_COLOR
+        color = name_colors[name]
+    else:
+        color = DEFAULT_CARD_NAME_COLORS.get(name) or (COLOURLESS_MANA_COLOR,)
+    if isinstance(color, tuple) and color and isinstance(color[0], int):
+        return (blended_mana_color_for_values(color),)
+    if isinstance(color, tuple):
+        return color
+    return (color,)
+
+
+def colorize_card_name(name: str, palette: tuple[str, ...]) -> str:
+    """Apply a mana colour to a card name."""
+    return f"{palette[0]}{name}{ANSI_RESET}" if palette else name
 
 
 def colorize_card_names(
     line: str,
     color_enabled: bool,
     outer_color: str | None = None,
-    name_colors: dict[str, str] | None = None,
+    name_colors: dict[str, str | tuple[int, ...]] | None = None,
     name_pattern: re.Pattern | None = None,
 ) -> str:
     """Apply mana-style colours to known card names in a transcript line."""
@@ -753,9 +778,10 @@ def colorize_card_names(
 
     def replace(match):
         name = match.group(0)
+        coloured_name = colorize_card_name(name, palette_for_card_name(name, name_colors))
         if outer_color:
-            return f"{ANSI_RESET}{color_for_card_name(name, name_colors)}{name}{ANSI_RESET}{outer_color}"
-        return f"{color_for_card_name(name, name_colors)}{name}{ANSI_RESET}"
+            return f"{ANSI_RESET}{coloured_name}{outer_color}"
+        return coloured_name
 
     return name_pattern.sub(replace, line)
 
@@ -768,7 +794,7 @@ def colorize_land_names(line: str, color_enabled: bool, outer_color: str | None 
 def colorize_transcript_line(
     line: str,
     color_enabled: bool,
-    name_colors: dict[str, str] | None = None,
+    name_colors: dict[str, str | tuple[int, ...]] | None = None,
     name_pattern: re.Pattern | None = None,
 ) -> str:
     """Apply ANSI color to transcript syntax when requested."""
