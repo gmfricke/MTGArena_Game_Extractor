@@ -9,33 +9,64 @@ MTG Arena writes a lot of useful information into `Player.log`, but it is buried
 The result is a transcript that looks like:
 
 ```text
-===== GAME 25: MATCH 3319fccc-f8d0-4775-be1c-1f810a1bbd18 =====
-Game type: Constructed Duel (20 starting life)
+===== GAME 25: MATCH 84243913-7eb3-403e-a52e-0cc3c9cd3939 =====
+Game type: Constructed Brawl (25 starting life)
 
-=== Turn 10: Opponent ===
+...
+
+=== Turn 18: Opponent ===
+Opponent casts Mutable Explorer
+Opponent plays Plains
+Opponent casts Insidious Roots
+Opponent attacks me with Crabomination; Steel Seraph; and Rottenmouth Viper
+2x I sacrifice Warrior
+Warrior blocks Crabomination
+Lyra Dawnbringer blocks Steel Seraph
+Enduring Angel blocks Rottenmouth Viper
+2x I gain 6 life (27)
+My Steel Seraph dies
+Opponent's Rottenmouth Viper dies
+Warrior dies
+Opponent chooses Black for Nykthos, Shrine to Nyx (color)
+Opponent casts Kotis, Sibsig Champion from command zone; commander cast #2; next commander tax +4
+
+=== Turn 19: Me ===
 My board:
-  Lands: Tapped: Azorius Guildgate; 3x Plains
-  Artifacts/Enchantments: (empty)
-  Creatures: Untapped: Empyrean Eagle (summoning sick); Youthful Valkyrie (+2/+2 from counters) (summoning sick); Tapped: Giada, Font of Hope; Healer's Hawk; Inspiring Overseer (+1/+1 from counters)
-  Hand: Fog Bank; High Fae Trickster; Spectral Sailor
-  Library: 48 cards
-  Graveyard: (empty)
-  Exile: (empty)
+  Lands: Untapped: Emeria, Shattered Skyclave; 4x Plains
+  Artifacts/Enchantments: Untapped: Mox Amber; Oketra's Monument
+  Creatures: Untapped: Enduring Angel (+2/+2 from counters); Giada, Font of Hope; Lyra Dawnbringer (+1/+1 from counters)
+  Hand: Sheltered by Ghosts; Vanquisher's Banner
+  Library: 81 cards
+  Command: (empty)
+  Graveyard: Steel Seraph
+  Exile: Plains; Starnheim Aspirant; Stroke of Midnight; Swords to Plowshares
 Opponent's board:
-  Lands: Untapped: Mountain; Plains; 2x Wind-Scarred Crag
-  Artifacts/Enchantments: (empty)
-  Creatures: Untapped: Crusader of Odric; Fanatical Firebrand; Frenzied Goblin
-  Hand: 4 unknown cards
-  Library: 49 cards
-  Graveyard: (empty)
-  Exile: (empty)
-Opponent casts Valorous Stance targeting Giada, Font of Hope (Target creature gains indestructible until end of turn.)
-Opponent plays Mountain
-Opponent casts Goldvein Pick
-Opponent attacks me with Fanatical Firebrand; Crusader of Odric; and Frenzied Goblin
-I lose 5 life (21)
-Opponent's Fanatical Firebrand dies
-Opponent sacrifices Treasure
+  Lands: Tapped: Bojuka Bog; Forest; 3x Island; Mutavault (summoning sick); Nykthos, Shrine to Nyx (owned by me); Plains (owned by me); Thriving Grove; Thriving Isle
+  Artifacts/Enchantments: Untapped: Insidious Roots
+  Creatures: Untapped: Kotis, Sibsig Champion (summoning sick); Mutable Explorer (summoning sick); Tapped: Crabomination; Human
+  Hand: unknown card
+  Library: 83 cards
+  Command: (empty)
+  Graveyard: Counterspell; River's Rebuke; Rottenmouth Viper; Zero Point Ballad
+  Exile: Gonti, Night Minister
+Current State:
+  My next commander tax for Giada, Font of Hope is +4
+  Opponent's next commander tax for Kotis, Sibsig Champion is +4
+  Giada, Font of Hope has dealt 2 commander damage to Opponent
+I play Plains
+I cast Sheltered by Ghosts targeting Giada, Font of Hope
+Sheltered by Ghosts trigger exiles Kotis, Sibsig Champion
+I choose Angel for Vanquisher's Banner (creature type)
+I cast Vanquisher's Banner
+I attack Opponent with Giada, Font of Hope; Lyra Dawnbringer; and Enduring Angel
+Opponent loses 14 life (10)
+2x I gain 7 life (41)
+Commander damage: Giada, Font of Hope deals 5 to Opponent (7 total)
+Opponent loses 12 life (-2)
+I gain 5 life (53)
+I gain 7 life (53)
+
+Winner: Me
 
 ```
 
