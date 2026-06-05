@@ -1226,6 +1226,85 @@ def combine_duplicate_transcript_lines(lines: list[str]) -> list[str]:
     return combined
 
 
+def parse_damage_life_unit(lines: list[str], index: int) -> tuple[dict, int] | None:
+    """Parse repeated damage/life units for compact storm-copy summaries."""
+    if index + 1 >= len(lines):
+        return None
+    damage_match = re.fullmatch(r"(.+) deals (\d+) damage to (me|Opponent|Player \d+)", lines[index])
+    life_match = re.fullmatch(r"(I|Opponent|Player \d+) loses? (\d+) life \((-?\d+)\)", lines[index + 1])
+    if not damage_match or not life_match:
+        return None
+
+    source, damage, target = damage_match.groups()
+    loser, life_loss, total = life_match.groups()
+    expected_loser = "I" if target == "me" else target
+    if loser != expected_loser or int(damage) != int(life_loss):
+        return None
+
+    consumed = 2
+    resolve_line = None
+    if index + 2 < len(lines) and lines[index + 2] == f"{source} resolves":
+        resolve_line = lines[index + 2]
+        consumed = 3
+
+    return {
+        "source": source,
+        "damage": int(damage),
+        "target": target,
+        "loser": loser,
+        "life_loss": int(life_loss),
+        "total": int(total),
+        "resolve_line": resolve_line,
+    }, consumed
+
+
+def combine_repeated_damage_life_sequences(lines: list[str]) -> list[str]:
+    """Collapse repeated same damage/life-loss units while keeping final life total."""
+    combined = []
+    index = 0
+    while index < len(lines):
+        parsed = parse_damage_life_unit(lines, index)
+        if not parsed:
+            combined.append(lines[index])
+            index += 1
+            continue
+
+        first_unit, consumed = parsed
+        units = [first_unit]
+        cursor = index + consumed
+        while True:
+            next_parsed = parse_damage_life_unit(lines, cursor)
+            if not next_parsed:
+                break
+            next_unit, next_consumed = next_parsed
+            comparable_keys = ("source", "damage", "target", "loser", "life_loss", "resolve_line")
+            if any(first_unit[key] != next_unit[key] for key in comparable_keys):
+                break
+            units.append(next_unit)
+            cursor += next_consumed
+
+        if len(units) == 1:
+            combined.extend(lines[index : index + consumed])
+        else:
+            total_damage = first_unit["damage"] * len(units)
+            combined.append(
+                f"{len(units)}x {first_unit['source']} deals "
+                f"{total_damage} damage to {first_unit['target']}"
+            )
+            loser_label = "Me" if first_unit["loser"] == "I" else first_unit["loser"]
+            combined.append(
+                phrase_player_action(
+                    loser_label,
+                    "lose",
+                    f"{total_damage} life ({units[-1]['total']})",
+                )
+            )
+            if first_unit["resolve_line"]:
+                combined.append(f"{len(units)}x {first_unit['resolve_line']}")
+        index = cursor
+    return combined
+
+
 def joined_english_list(items: list[str]) -> str:
     """Join names as A, B, and C for transcript summaries."""
     if len(items) <= 1:
@@ -1367,6 +1446,20 @@ def attachment_summary_parts(attachment_names_by_kind: dict[str, list[str]]) -> 
         phrase = grouped_name_phrase(attachment_names_by_kind.get(kind, []))
         if phrase:
             parts.append(f"{verb} {phrase}")
+    return parts
+
+
+def attached_to_player_summary_parts(attachment_names_by_kind: dict[str, list[str]]) -> list[str]:
+    """Render attachments that are attached directly to a player."""
+    parts = []
+    for kind, label in (
+        ("aura", "Auras"),
+        ("equipment", "Equipment"),
+        ("other", "Other"),
+    ):
+        phrase = grouped_name_phrase(attachment_names_by_kind.get(kind, []))
+        if phrase:
+            parts.append(f"{label}: {phrase}")
     return parts
 
 
@@ -1616,7 +1709,11 @@ def default_archive_db_path() -> Path:
 
 def cleaned_transcript_lines(lines: list[str]) -> list[str]:
     return remove_redundant_match_winner_lines(
-        combine_adjacent_attack_lines(combine_duplicate_transcript_lines(lines))
+        combine_adjacent_attack_lines(
+            combine_duplicate_transcript_lines(
+                combine_repeated_damage_life_sequences(lines)
+            )
+        )
     )
 
 
@@ -2824,6 +2921,16 @@ def extract_game_plays(
             label = f"{label} ({state})"
         return label
 
+    def attachment_kind(attachment_id):
+        """Classify an attachment by subtype for player and permanent summaries."""
+        attachment = objects.get(attachment_id, {})
+        subtypes = set(attachment.get("subtypes") or [])
+        if "SubType_Aura" in subtypes:
+            return "aura"
+        if "SubType_Equipment" in subtypes:
+            return "equipment"
+        return "other"
+
     def attachments_for_permanent(instance_id):
         """Collect auras/equipment explicitly attached to this permanent."""
         attachment_names_by_kind = defaultdict(list)
@@ -2833,20 +2940,25 @@ def extract_game_plays(
             if instance_id not in (ann.get("affectedIds") or []):
                 continue
             attachment_id = ann.get("affectorId")
-            attachment = objects.get(attachment_id, {})
             name = card_label_for_snapshot(attachment_id)
             if not name or name == "unknown card":
                 continue
-            subtypes = set(attachment.get("subtypes") or [])
-            # The annotation tells us the relationship; the subtype tells us
-            # how to word it without guessing from the card name.
-            if "SubType_Aura" in subtypes:
-                kind = "aura"
-            elif "SubType_Equipment" in subtypes:
-                kind = "equipment"
-            else:
-                kind = "other"
-            attachment_names_by_kind[kind].append(name)
+            attachment_names_by_kind[attachment_kind(attachment_id)].append(name)
+        return attachment_names_by_kind
+
+    def attachments_for_player(seat):
+        """Collect attachments whose affected object is a player seat."""
+        attachment_names_by_kind = defaultdict(list)
+        for ann in persistent_annotations.values():
+            if "AnnotationType_Attachment" not in set(ann.get("type") or []):
+                continue
+            if seat not in (ann.get("affectedIds") or []):
+                continue
+            attachment_id = ann.get("affectorId")
+            name = card_label_for_snapshot(attachment_id)
+            if not name or name == "unknown card":
+                continue
+            attachment_names_by_kind[attachment_kind(attachment_id)].append(name)
         return attachment_names_by_kind
 
     def battlefield_row_for_object(obj):
@@ -2966,6 +3078,7 @@ def extract_game_plays(
         emit(f"{state_zone_label(label, 'hand')}: {compact_names(hand_names(seat))}")
         emit(f"{state_player_heading(label)}:")
         emit_board_rows(seat)
+        emit_player_attachments(seat)
         emit(f"  {phrase_library_count('Library', library_count(seat))}")
         if current_game_has_commanders:
             emit(f"  Command: {compact_names(command_zone_names(seat))}")
@@ -2973,6 +3086,12 @@ def extract_game_plays(
         emit(f"  Exile: {compact_names(zone_names('ZoneType_Exile', seat))}")
         for line in available_resource_lines(available_resources_for_seat(seat)):
             emit(f"  {line}")
+
+    def emit_player_attachments(seat):
+        """Print attachments such as Curses that are attached directly to a player."""
+        parts = attached_to_player_summary_parts(attachments_for_player(seat))
+        if parts:
+            emit(f"  Attached: {'; '.join(parts)}")
 
     def emit_board_rows(seat):
         """Print board rows in the requested land/noncreature/creature order."""
@@ -3875,7 +3994,7 @@ def extract_game_plays(
         if attachment_id is None or not targets:
             return
         attachment = card_label(attachment_id)
-        target = card_label(targets[0])
+        target = target_label(targets[0])
         key = (current_match, gsm.get("gameStateId"), ann.get("id"), attachment_id, targets[0])
         if key in seen_state_events:
             return

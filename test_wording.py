@@ -9,6 +9,7 @@ from pathlib import Path
 
 from mtga_extract_games import (
     active_effect_for_resolved_permanent,
+    attached_to_player_summary_parts,
     ability_source_instance_id,
     ability_object_label,
     attack_phrase,
@@ -26,6 +27,7 @@ from mtga_extract_games import (
     clean_localized_enum_name,
     combine_adjacent_attack_lines,
     combine_duplicate_transcript_lines,
+    combine_repeated_damage_life_sequences,
     compact_counted_name,
     counter_summary_suffix,
     copied_object_label,
@@ -274,6 +276,27 @@ class WordingTests(unittest.TestCase):
                 "2x Opponent discards Island",
                 "Winner: Opponent",
                 "Winner: Opponent",
+            ],
+        )
+
+    def test_repeated_damage_life_sequences_are_combined(self):
+        lines = [
+            "A copy of Shock deals 2 damage to me",
+            "I lose 2 life (15)",
+            "A copy of Shock resolves",
+            "A copy of Shock deals 2 damage to me",
+            "I lose 2 life (13)",
+            "A copy of Shock resolves",
+            "A copy of Shock deals 2 damage to me",
+            "I lose 2 life (11)",
+            "A copy of Shock resolves",
+        ]
+        self.assertEqual(
+            combine_repeated_damage_life_sequences(lines),
+            [
+                "3x A copy of Shock deals 6 damage to me",
+                "I lose 6 life (11)",
+                "3x A copy of Shock resolves",
             ],
         )
 
@@ -965,6 +988,10 @@ class WordingTests(unittest.TestCase):
                 "equipped with Shadowspear",
                 "attached to Cursed Role",
             ],
+        )
+        self.assertEqual(
+            attached_to_player_summary_parts({"aura": ["Curse of Leeches"]}),
+            ["Auras: Curse of Leeches"],
         )
         self.assertEqual(
             modifier_summary_suffix(
