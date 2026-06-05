@@ -1,8 +1,8 @@
 # MTGArena_Game_Extractor
 
-I wanted a tool that gave me my MTG Arena games in plain text so I could review them later and pass them into other software. Since this tools is reading logs from a game with frequent updates I expect it to need updating a lot to keep up. 
+I wanted a tool that gave me my MTG Arena games in plain text so I could review them later and pass them into other software. I could not find anything straightforward that did this, so I wrote this Python program.
 
-I could not find anything straightforward that did this, so I wrote this Python program.
+Since this tools is reading logs from a game with frequent updates I expect it to need updating a lot to keep up. 
 
 MTG Arena writes a lot of useful information into `Player.log`, but it is buried in large JSON messages and most of the gameplay events use internal IDs instead of card names. This script reads the log, follows the game state messages, and uses the local Arena card database to translate card `grpId` values into readable card names.
 
