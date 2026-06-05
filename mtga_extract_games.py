@@ -516,6 +516,54 @@ def game_has_commanders(game_info: dict | None) -> bool:
     return "Brawl" in variant or "Commander" in variant
 
 
+ANSI_RESET = "\033[0m"
+TRANSCRIPT_COLORS = {
+    "me": "\033[36m",
+    "opponent": "\033[35m",
+}
+
+
+def should_color_output(color_mode: str, stdout_is_tty: bool) -> bool:
+    """Return true when transcript lines should include ANSI color."""
+    if color_mode == "always":
+        return True
+    if color_mode == "auto":
+        return stdout_is_tty
+    return False
+
+
+def transcript_line_perspective(line: str) -> str | None:
+    """Classify transcript lines that clearly belong to one player."""
+    if line.startswith("=== Turn ") and line.endswith(": Me ==="):
+        return "me"
+    if line.startswith("=== Turn ") and line.endswith(": Opponent ==="):
+        return "opponent"
+    if line.startswith(("I ", "My ", "My side:", "Winner: Me", "Match winner: Me")):
+        return "me"
+    if line.startswith(
+        (
+            "Opponent ",
+            "Opponent:",
+            "Opponent's ",
+            "Winner: Opponent",
+            "Match winner: Opponent",
+        )
+    ):
+        return "opponent"
+    return None
+
+
+def colorize_transcript_line(line: str, color_enabled: bool) -> str:
+    """Apply ANSI color to clearly attributed player transcript lines."""
+    if not color_enabled:
+        return line
+    perspective = transcript_line_perspective(line)
+    color = TRANSCRIPT_COLORS.get(perspective)
+    if not color:
+        return line
+    return f"{color}{line}{ANSI_RESET}"
+
+
 def possessive_pronoun(label: str) -> str:
     """Return a short possessive phrase for a player label."""
     if label == "Me":
@@ -1047,6 +1095,7 @@ def extract_game_plays(
     enum_value_names: dict[str, dict[int, str]] | None = None,
     card_metadata: dict[int, dict] | None = None,
     ability_texts: dict[int, str] | None = None,
+    color_mode: str = "never",
 ) -> None:
     """Extract a readable play transcript from MTGA Player.log."""
     zones = {}
@@ -1126,6 +1175,7 @@ def extract_game_plays(
     enum_value_names = enum_value_names or {}
     card_metadata = card_metadata or {}
     ability_texts = ability_texts or {}
+    color_enabled = should_color_output(color_mode, sys.stdout.isatty())
     subtype_names = enum_value_names.get("SubType") or {}
     counter_type_names = enum_value_names.get("CounterType") or {}
     choice_value_names = {
@@ -1186,7 +1236,7 @@ def extract_game_plays(
         if current_match_lines is not None:
             current_match_lines.append(line)
             if live:
-                print(line, flush=True)
+                print(colorize_transcript_line(line, color_enabled), flush=True)
 
     def mark_postgame_payload(root):
         """Remember postgame account/course blobs that appear after GRE stops."""
@@ -3229,7 +3279,8 @@ def extract_game_plays(
             print()
             print()
         first = False
-        print("\n".join(combine_duplicate_transcript_lines(match["lines"])))
+        lines = combine_duplicate_transcript_lines(match["lines"])
+        print("\n".join(colorize_transcript_line(line, color_enabled) for line in lines))
 
     if debug_grp_ids:
         print("\nDebug GrpId object windows:", file=sys.stderr)
@@ -3387,6 +3438,9 @@ def main() -> None:
   Watch for new games as Arena writes Player.log:
     python3 mtga_extract_games.py --live --no-resolves
 
+  Highlight my lines and opponent lines in a terminal:
+    python3 mtga_extract_games.py --last 1 --color always
+
 macOS path examples:
   LOG="$HOME/Library/Logs/Wizards Of The Coast/MTGA/Player.log"
   CARDDB="$HOME/Library/Application Support/com.wizards.mtga/Downloads/Raw/Raw_CardDatabase_....mtga"
@@ -3509,6 +3563,12 @@ No pip install step is required; this script only uses Python's standard library
         action="store_true",
         help="print the current game from its start, then watch Player.log for new lines",
     )
+    parser.add_argument(
+        "--color",
+        choices=("never", "auto", "always"),
+        default="never",
+        help="color clearly attributed Me/Opponent transcript lines; default: never",
+    )
     args = parser.parse_args()
 
     try:
@@ -3581,6 +3641,7 @@ No pip install step is required; this script only uses Python's standard library
         enum_value_names=enum_value_names,
         card_metadata=card_metadata,
         ability_texts=ability_texts,
+        color_mode=args.color,
     )
 
 

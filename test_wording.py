@@ -17,6 +17,7 @@ from mtga_extract_games import (
     base_cast_name,
     card_is_land,
     card_is_nonland_permanent,
+    colorize_transcript_line,
     clean_localized_enum_name,
     combine_duplicate_transcript_lines,
     compact_counted_name,
@@ -72,6 +73,8 @@ from mtga_extract_games import (
     state_player_label,
     state_zone_label,
     subject_pronoun,
+    should_color_output,
+    transcript_line_perspective,
 )
 
 
@@ -82,6 +85,21 @@ class WordingTests(unittest.TestCase):
             phrase_player_action("Me", "cast", "Giada, Font of Hope"),
             "I cast Giada, Font of Hope",
         )
+
+    def test_transcript_line_color_helpers(self):
+        self.assertEqual(transcript_line_perspective("I cast Giada, Font of Hope"), "me")
+        self.assertEqual(transcript_line_perspective("My side:"), "me")
+        self.assertEqual(
+            transcript_line_perspective("Opponent casts Arcane Signet"),
+            "opponent",
+        )
+        self.assertIsNone(transcript_line_perspective("Game type: Constructed Duel"))
+        self.assertFalse(should_color_output("never", True))
+        self.assertFalse(should_color_output("auto", False))
+        self.assertTrue(should_color_output("auto", True))
+        self.assertTrue(should_color_output("always", False))
+        self.assertIn("\033[36m", colorize_transcript_line("I cast Giada", True))
+        self.assertEqual(colorize_transcript_line("I cast Giada", False), "I cast Giada")
 
     def test_turn_state_uses_possessive_labels(self):
         self.assertEqual(state_zone_label("Me", "board"), "My board")
