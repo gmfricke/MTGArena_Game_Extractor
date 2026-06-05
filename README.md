@@ -57,7 +57,7 @@ Arena games go by quickly, and the client does not give me a simple text transcr
 - feed the transcript into other tools
 - debug weird board states or decisions
 
-I looked briefly at alternatives but non did what I wanted and I sometimes had to pay quite a bit of money to find that out. 
+I looked briefly at alternatives but none did what I wanted and I sometimes had to pay quite a bit of money to find that out. 
 
 The script is also useful if you are curious about how MTG Arena represents games internally. There are debug modes for inspecting annotations, raw game events, card objects, and player choice records.
 
