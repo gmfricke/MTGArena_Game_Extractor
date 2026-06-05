@@ -562,10 +562,10 @@ MANA_COLORS = {
 MULTICOLOUR_MANA_COLORS = {
     (1, 2): "\033[1;36m",
     (1, 3): "\033[1;90m",
-    (1, 4): "\033[1;33m",
+    (1, 4): "\033[1;35m",
     (1, 5): "\033[1;32m",
     (2, 3): "\033[35m",
-    (2, 4): "\033[1;35m",
+    (2, 4): "\033[35m",
     (2, 5): "\033[36m",
     (3, 4): "\033[31m",
     (3, 5): "\033[32m",
@@ -763,6 +763,17 @@ def colorize_card_name(name: str, palette: tuple[str, ...]) -> str:
     return f"{palette[0]}{name}{ANSI_RESET}" if palette else name
 
 
+def colorize_list_conjunctions(line: str, outer_color: str | None) -> str:
+    """Make list conjunctions neutral before highlighted card names."""
+    if not outer_color:
+        return line
+
+    def replace(match):
+        return f"{match.group(1)}{ANSI_RESET}{COLOURLESS_MANA_COLOR}and{ANSI_RESET}{outer_color} "
+
+    return re.sub(r"([;\s])and (?=\033\[)", replace, line)
+
+
 def colorize_card_names(
     line: str,
     color_enabled: bool,
@@ -783,7 +794,7 @@ def colorize_card_names(
             return f"{ANSI_RESET}{coloured_name}{outer_color}"
         return coloured_name
 
-    return name_pattern.sub(replace, line)
+    return colorize_list_conjunctions(name_pattern.sub(replace, line), outer_color)
 
 
 def colorize_land_names(line: str, color_enabled: bool, outer_color: str | None = None) -> str:

@@ -2,89 +2,40 @@
 
 I wanted a tool that gave me my MTG Arena games in plain text so I could review them later and pass them into other software. I could not find anything straightforward that did this, so I wrote this Python program.
 
-Since this tools is reading logs from a game with frequent updates I expect it to need updating a lot to keep up. 
+Since this tool reads logs from a game with frequent updates I expect it to need updating a lot to keep up.
 
 MTG Arena writes a lot of useful information into `Player.log`, but it is buried in large JSON messages and most of the gameplay events use internal IDs instead of card names. This script reads the log, follows the game state messages, and uses the local Arena card database to translate card `grpId` values into readable card names.
 
 The result is a transcript that looks more like:
 
 ```text
-===== GAME 24: MATCH afae4493-13bd-43c0-8465-9490c0a71329 =====
-I mulligan (kept 7 cards)
+===== GAME 25: MATCH 3319fccc-f8d0-4775-be1c-1f810a1bbd18 =====
+Game type: Constructed Duel (20 starting life)
 
-=== Turn 1: Opponent ===
-My side:
-  Board:
-    Lands: (empty)
-    Artifacts/Enchantments: (empty)
-    Creatures: (empty)
-  Hand: Boon-Bringer Valkyrie; Esper Sentinel; 2x Plains; Stroke of Midnight; Swords to Plowshares; Thalia, Heretic Cathar
-  Library: 92 cards
-  Command: Giada, Font of Hope
+=== Turn 10: Opponent ===
+My board:
+  Lands: Tapped: Azorius Guildgate; 3x Plains
+  Artifacts/Enchantments: (empty)
+  Creatures: Untapped: Empyrean Eagle (summoning sick); Youthful Valkyrie (+2/+2 from counters) (summoning sick); Tapped: Giada, Font of Hope; Healer's Hawk; Inspiring Overseer (+1/+1 from counters)
+  Hand: Fog Bank; High Fae Trickster; Spectral Sailor
+  Library: 48 cards
   Graveyard: (empty)
   Exile: (empty)
-Opponent:
-  Board:
-    Lands: (empty)
-    Artifacts/Enchantments: (empty)
-    Creatures: (empty)
-  Hand: 7 unknown cards
-  Library: 92 cards
-  Command: Kefka, Court Mage
+Opponent's board:
+  Lands: Untapped: Mountain; Plains; 2x Wind-Scarred Crag
+  Artifacts/Enchantments: (empty)
+  Creatures: Untapped: Crusader of Odric; Fanatical Firebrand; Frenzied Goblin
+  Hand: 4 unknown cards
+  Library: 49 cards
   Graveyard: (empty)
   Exile: (empty)
-Opponent plays Raucous Theater
-
-=== Turn 2: Me ===
-My side:
-  Board:
-    Lands: (empty)
-    Artifacts/Enchantments: (empty)
-    Creatures: (empty)
-  Hand: Boon-Bringer Valkyrie; Esper Sentinel; 2x Plains; Stroke of Midnight; Swords to Plowshares; Thalia, Heretic Cathar
-  Library: 92 cards
-  Command: Giada, Font of Hope
-  Graveyard: (empty)
-  Exile: (empty)
-Opponent:
-  Board:
-    Lands: Tapped: Raucous Theater
-    Artifacts/Enchantments: (empty)
-    Creatures: (empty)
-  Hand: 6 unknown cards
-  Library: 91 cards
-  Command: Kefka, Court Mage
-  Graveyard: Mischievous Mystic
-  Exile: (empty)
-I play Plains
-I cast Esper Sentinel
-Esper Sentinel resolves
-
-=== Turn 3: Opponent ===
-My side:
-  Board:
-    Lands: Tapped: Plains
-    Artifacts/Enchantments: (empty)
-    Creatures: Untapped: Esper Sentinel (summoning sick)
-  Hand: Boon-Bringer Valkyrie; Champions of Tyr; Plains; Stroke of Midnight; Swords to Plowshares; Thalia, Heretic Cathar
-  Library: 91 cards
-  Command: Giada, Font of Hope
-  Graveyard: (empty)
-  Exile: (empty)
-Opponent:
-  Board:
-    Lands: Untapped: Raucous Theater
-    Artifacts/Enchantments: (empty)
-    Creatures: (empty)
-  Hand: 6 unknown cards
-  Library: 91 cards
-  Command: Kefka, Court Mage
-  Graveyard: Mischievous Mystic
-  Exile: (empty)
-Opponent plays Riverpyre Verge
-Opponent casts Depressurize targeting Esper Sentinel
-Depressurize destroys Esper Sentinel
-Depressurize resolves
+Opponent casts Valorous Stance targeting Giada, Font of Hope (Target creature gains indestructible until end of turn.)
+Opponent plays Mountain
+Opponent casts Goldvein Pick
+Opponent attacks me with Fanatical Firebrand; Crusader of Odric; and Frenzied Goblin
+I lose 5 life (21)
+Opponent's Fanatical Firebrand dies
+Opponent sacrifices Treasure
 
 ```
 
@@ -247,6 +198,14 @@ Use this for every game in `Player.log` and `Player-prev.log`:
 python3 mtga_extract_games.py --all --no-resolves
 ```
 
+Use this to add terminal colours:
+
+```bash
+python3 mtga_extract_games.py --last 1 --no-resolves --colour always
+```
+
+The colour mode highlights transcript structure, Me/Opponent lines, results, and known land/creature names. Land and creature names use MTG-style colour accents from the Arena card database when possible. Multicolour cards use a conservative ANSI blend such as cyan for white-blue, purple for blue-red, and pink/bright magenta for white-red. Colourless cards and neutral list words such as `and` use neutral gray. `--color` is accepted as an alias, but the documented spelling is `--colour`.
+
 Use this to save output to a text file:
 
 ```bash
@@ -265,7 +224,12 @@ The most useful options are:
 - `--live`: show the current game from its start, then print new transcript lines as Arena writes them
 - `--no-resolves`: hide routine "resolves" lines
 - `--no-turn-state`: hide board and hand snapshots
+- `--progress`: show a progress bar on stderr while parsing
 - `--no-progress`: hide the progress bar
+- `--colour never`: do not add ANSI colour escapes; this is the default
+- `--colour auto`: add ANSI colour escapes only when stdout is a terminal
+- `--colour always`: always add ANSI colour escapes
+- `--color`: older/American spelling alias for `--colour`
 
 `--select 4` still works as an older name for `--nth-from-start 4`.
 
@@ -291,10 +255,22 @@ To look for events that may contain choices or selections:
 python3 mtga_extract_games.py --last 1 --debug-choices
 ```
 
+To look for target-like payloads for spells and abilities:
+
+```bash
+python3 mtga_extract_games.py --last 1 --debug-targets
+```
+
 To look for trigger-like events, including creatures entering the battlefield attacking:
 
 ```bash
 python3 mtga_extract_games.py --last 1 --debug-triggers
+```
+
+To print annotation type/category counts and sample payloads:
+
+```bash
+python3 mtga_extract_games.py --last 1 --debug-annotations
 ```
 
 This is meant to help find where Arena records choices like creature type, protection type, modal choices, triggered abilities, or similar decisions.

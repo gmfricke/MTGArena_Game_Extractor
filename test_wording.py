@@ -125,7 +125,7 @@ class WordingTests(unittest.TestCase):
             colorize_land_names("I play Nykthos, Shrine to Nyx", True),
         )
         wind_crag = colorize_land_names("Opponent plays Wind-Scarred Crag", True)
-        self.assertIn("\033[1;33mWind-Scarred Crag", wind_crag)
+        self.assertIn("\033[1;35mWind-Scarred Crag", wind_crag)
         self.assertIn(
             "\033[1;32mSnow-Covered Forest",
             colorize_land_names("I play Snow-Covered Forest", True),
@@ -173,6 +173,14 @@ class WordingTests(unittest.TestCase):
         )
         self.assertIn("\033[1;37mGiada, Font of Hope", line)
         self.assertIn("\033[1;36mEmpyrean Eagle", line)
+        self.assertIn("\033[37mand\033[0m", line)
+        semicolon_line = colorize_transcript_line(
+            "I attack Opponent with Giada, Font of Hope; Healer's Hawk; and Empyrean Eagle",
+            True,
+            name_colors,
+            name_pattern,
+        )
+        self.assertIn("\033[37mand\033[0m", semicolon_line)
         self.assertIn(
             "\033[37mOrnithopter",
             colorize_transcript_line("Opponent casts Ornithopter", True, name_colors, name_pattern),
@@ -183,7 +191,7 @@ class WordingTests(unittest.TestCase):
             name_colors,
             name_pattern,
         )
-        self.assertIn("\033[1;33mWind-Scarred Crag", wind_crag)
+        self.assertIn("\033[1;35mWind-Scarred Crag", wind_crag)
 
     def test_turn_state_uses_possessive_labels(self):
         self.assertEqual(state_zone_label("Me", "board"), "My board")
