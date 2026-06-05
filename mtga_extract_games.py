@@ -2703,7 +2703,9 @@ def extract_game_plays(
         """Return a board label with transient visible state such as summoning sickness."""
         label = permanent_label_for_snapshot(obj.get("instanceId"))
         if obj.get("hasSummoningSickness"):
-            label = f"{label} (summoning sick)"
+            card_types = set(obj.get("cardTypes") or [])
+            state = "summoning sick" if "CardType_Creature" in card_types else "entered this turn"
+            label = f"{label} ({state})"
         return label
 
     def attachments_for_permanent(instance_id):

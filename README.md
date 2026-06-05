@@ -50,7 +50,7 @@ My board:
   Exile: Plains; Starnheim Aspirant; Stroke of Midnight; Swords to Plowshares
 Opponent's hand: unknown card
 Opponent's board:
-  Lands: Tapped: Bojuka Bog; Forest; 3x Island; Mutavault (summoning sick); Nykthos, Shrine to Nyx (owned by me); Plains (owned by me); Thriving Grove; Thriving Isle
+  Lands: Tapped: Bojuka Bog; Forest; 3x Island; Mutavault (entered this turn); Nykthos, Shrine to Nyx (owned by me); Plains (owned by me); Thriving Grove; Thriving Isle
   Artifacts/Enchantments: Untapped: Insidious Roots
   Creatures: Untapped: Kotis, Sibsig Champion (summoning sick); Mutable Explorer (summoning sick); Tapped: Crabomination; Human
   Library: 83 cards
