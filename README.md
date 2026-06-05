@@ -247,6 +247,8 @@ This is the most recent game extracted with:
 python3 mtga_extract_games.py --last 1 --no-resolves
 ```
 
+Note that the game ended when one of the players tried to draw from an empty library. Arena did not include the last actions in the log which often happens if there are a large number of actions on the stack resolving at once to trigger a win. The end of game and who won was inferred from the game stat update.
+
 ```text
 ===== GAME 31: MATCH 51838338-69a5-4e3c-b9f6-d3ec836cf066 =====
 Game type: Constructed Brawl (25 starting life)
