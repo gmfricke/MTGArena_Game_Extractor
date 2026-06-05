@@ -1495,6 +1495,7 @@ def extract_game_plays(
     current_game_has_commanders = False
     known_local_seat = None
     current_match_number = 0
+    current_turn_info = {}
     current_match_lines = None
     current_match_record = None
     transcript_matches = []
@@ -2871,7 +2872,8 @@ def extract_game_plays(
 
     def emit_combat_events(gsm):
         """Emit attack/block declarations from combat-state object fields."""
-        if gsm.get("turnInfo", {}).get("phase") != "Phase_Combat":
+        turn_info = gsm.get("turnInfo") or current_turn_info
+        if turn_info.get("phase") != "Phase_Combat":
             return
 
         for obj in gsm.get("gameObjects", []):
@@ -3487,6 +3489,7 @@ def extract_game_plays(
                             transcript_matches.append(current_match_record)
                             event_index = 0
                             current_turn = None
+                            current_turn_info = {}
                             last_game_state_id = None
                             current_game_has_commanders = game_has_commanders(gsm.get("gameInfo"))
                             known_local_seat = None
@@ -3540,6 +3543,8 @@ def extract_game_plays(
                             known_local_seat = infer_local_seat()
 
                         turn_info = gsm.get("turnInfo", {})
+                        if turn_info:
+                            current_turn_info = turn_info
                         if "turnNumber" in turn_info and turn_info["turnNumber"] != current_turn:
                             flush_pending_event_groups()
                             current_turn = turn_info["turnNumber"]
