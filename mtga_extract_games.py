@@ -10,6 +10,49 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 
+DEATH_CATEGORIES = {
+    "SBA_Damage", "SBA_Deathtouch", "SBA_ZeroLoyalty",
+    "SBA_ZeroToughness", "SBA_UnattachedAura",
+}
+
+CHOICE_DOMAIN_NAMES = {
+    4: "card type", 5: "creature type", 6: "color",
+    11: "permanent type", 14: "mana value parity",
+}
+
+PLAYER_COUNTER_NAMES = {
+    "poison": "poison", "energy": "energy", "experience": "experience",
+    "CounterType_Poison": "poison",
+    "CounterType_Energy": "energy",
+    "CounterType_Experience": "experience",
+}
+
+BASE_CHOICE_VALUE_NAMES = {
+    4: {
+        1: "Artifact", 2: "Creature", 3: "Enchantment", 4: "Instant",
+        5: "Land", 6: "Planeswalker", 7: "Sorcery", 8: "Battle",
+    },
+    6: {1: "White", 2: "Blue", 3: "Black", 4: "Red", 5: "Green", 6: "Colorless"},
+    11: {1: "creature"},
+    14: {0: "even", 1: "odd"},
+}
+
+# Observed on Skithiryx, the Blight Dragon. Arena records its combat damage to
+# players as damage with markDamage=0 instead of ModifiedLife.
+INFECT_ABILITY_GRP_IDS = {91}
+
+
+def clear_all(*containers):
+    for container in containers:
+        container.clear()
+
+
+def build_choice_value_names(subtype_names: dict[int, str]) -> dict[int, dict[int, str]]:
+    values = {domain: dict(names) for domain, names in BASE_CHOICE_VALUE_NAMES.items()}
+    values[5] = {1: "Angel", **subtype_names}
+    return values
+
+
 def load_grp_id_to_name(carddb_path: Path) -> dict[int, str]:
     """Load Arena GrpId -> English card name from Raw_CardDatabase_*.mtga."""
     if not carddb_path.exists():
@@ -1431,6 +1474,18 @@ def is_low_fidelity_update_without_turn(gsm: dict) -> bool:
     return "turnNumber" not in turn_info and "phase" not in turn_info
 
 
+def new_match_record(number: int, match_id: str, lines: list[str]) -> dict:
+    """Build the per-match transcript/debug container."""
+    return {
+        "number": number, "match_id": match_id, "lines": lines,
+        "events": [], "debug_hits": [],
+        "debug_seen_objects": set(),
+        "choice_events": [], "target_events": [], "trigger_events": [],
+        "has_result": False, "saw_postgame_payload": False,
+        "postgame_hint": None, "finalized": False,
+    }
+
+
 def extract_game_plays(
     player_log: Path,
     grp_to_name: dict[int, str],
@@ -1516,20 +1571,6 @@ def extract_game_plays(
     read_bytes = 0
     last_progress_at = 0.0
 
-    death_categories = {
-        "SBA_Damage",
-        "SBA_Deathtouch",
-        "SBA_ZeroLoyalty",
-        "SBA_ZeroToughness",
-        "SBA_UnattachedAura",
-    }
-    choice_domain_names = {
-        4: "card type",
-        5: "creature type",
-        6: "color",
-        11: "permanent type",
-        14: "mana value parity",
-    }
     enum_value_names = enum_value_names or {}
     card_metadata = card_metadata or {}
     ability_texts = ability_texts or {}
@@ -1538,60 +1579,7 @@ def extract_game_plays(
     card_name_pattern = build_card_name_pattern(card_name_colors)
     subtype_names = enum_value_names.get("SubType") or {}
     counter_type_names = enum_value_names.get("CounterType") or {}
-    choice_value_names = {
-        # Observed in current GRE logs:
-        # Serra's Emissary: domain 4, value 2 -> Creature.
-        # Patchwork Banner / Vanquisher's Banner / Cavern of Souls:
-        # domain 5, value 1 -> Angel.
-        # Creature type values are Arena SubType enum values when the card DB
-        # exposes them, so Cavern value 25 comes from SubType 25 -> Elemental.
-        # Nyx Lotus / Nykthos: domain 6, value 1 -> White.
-        # Extinction Event: domain 14, value 0 -> even.
-        4: {
-            1: "Artifact",
-            2: "Creature",
-            3: "Enchantment",
-            4: "Instant",
-            5: "Land",
-            6: "Planeswalker",
-            7: "Sorcery",
-            8: "Battle",
-        },
-        5: {1: "Angel", **subtype_names},
-        6: {
-            1: "White",
-            2: "Blue",
-            3: "Black",
-            4: "Red",
-            5: "Green",
-            6: "Colorless",
-        },
-        # Observed from Elspeth Conquers Death chapter III returning
-        # Snapcaster Mage. This is still deliberately narrow until more
-        # values are seen in real games.
-        11: {
-            1: "creature",
-        },
-        14: {
-            0: "even",
-            1: "odd",
-        },
-    }
-    player_counter_names = {
-        # These are intentionally conservative. Current sample logs did not
-        # expose poison, energy, or experience counters on players, so unknown
-        # numeric counter types are kept out of the transcript until observed.
-        "poison": "poison",
-        "energy": "energy",
-        "experience": "experience",
-        "CounterType_Poison": "poison",
-        "CounterType_Energy": "energy",
-        "CounterType_Experience": "experience",
-    }
-    # Observed on Skithiryx, the Blight Dragon. Arena records its combat
-    # damage to players as damage with markDamage=0 instead of ModifiedLife.
-    infect_ability_grp_ids = {91}
-
+    choice_value_names = build_choice_value_names(subtype_names)
     def emit(line=""):
         if current_match_lines is not None:
             current_match_lines.append(line)
@@ -1639,6 +1627,73 @@ def extract_game_plays(
         emit("")
         for line in phrase_incomplete_game_notice(current_match_record.get("postgame_hint")):
             emit(line)
+
+    def reset_match_state(gsm):
+        """Clear state that belongs only to the newly started Arena match."""
+        nonlocal current_turn, current_turn_info, last_game_state_id
+        nonlocal current_game_has_commanders, known_local_seat, event_index
+        nonlocal pending_mill_group
+
+        event_index = 0
+        current_turn = None
+        current_turn_info = {}
+        last_game_state_id = None
+        current_game_has_commanders = game_has_commanders(gsm.get("gameInfo"))
+        known_local_seat = None
+
+        clear_all(
+            zones,
+            objects,
+            players,
+            team_to_seats,
+            remembered_object_labels,
+            stack_display_names,
+            ability_source_names,
+            pending_stack_casts,
+            pending_life_groups,
+            active_effects,
+            commander_grps_by_seat,
+            commander_damage,
+            player_counters,
+            object_counters,
+            persistent_annotations,
+            known_targets_by_source,
+            known_target_names_by_source,
+            known_target_ability_ids_by_source,
+        )
+        clear_all(
+            seen_combat,
+            seen_commander_damage,
+            seen_no_combat_damage,
+            seen_enters_attacking,
+            ability_trigger_ids,
+            commander_instance_ids,
+            commander_cast_counts,
+            pending_death_events,
+        )
+        pending_mill_group = None
+
+    def start_match(match_id, gsm):
+        """Initialize transcript and parser state for a new Arena match id."""
+        nonlocal current_match, current_match_number
+        nonlocal current_match_lines, current_match_record
+
+        finalize_current_match()
+        current_match = match_id
+        current_match_number += 1
+        current_match_lines = []
+        current_match_record = new_match_record(
+            current_match_number,
+            current_match,
+            current_match_lines,
+        )
+        transcript_matches.append(current_match_record)
+        reset_match_state(gsm)
+
+        emit(f"===== GAME {current_match_number}: MATCH {current_match} =====")
+        game_type_line = format_game_type(gsm.get("gameInfo"), gsm.get("players"))
+        if game_type_line:
+            emit(game_type_line)
 
     def add_active_effect(key, text, source_id=None, until=None):
         """Record a major ongoing effect for turn-state summaries."""
@@ -2733,7 +2788,7 @@ def extract_game_plays(
             if copy_name:
                 stack_display_names[iid] = copy_name
                 remembered_object_labels[iid] = copy_name
-        elif category in death_categories:
+        elif category in DEATH_CATEGORIES:
             flush_pending_mill_group()
             flush_pending_cast_for_affector(ann.get("affectorId"))
             controller = object_owner(iid)
@@ -2815,7 +2870,7 @@ def extract_game_plays(
         seat = object_owner(source_id)
         affected = ann.get("affectedIds") or []
         chooser = owner_label(seat or (affected[0] if affected else None))
-        domain_text = choice_domain_names.get(domain, f"choice domain {domain}")
+        domain_text = CHOICE_DOMAIN_NAMES.get(domain, f"choice domain {domain}")
         value_text = phrase_choice_value(
             domain_text,
             value,
@@ -3094,7 +3149,7 @@ def extract_game_plays(
             return
 
         source_id = ann.get("affectorId")
-        if not object_has_ability(source_id, infect_ability_grp_ids):
+        if not object_has_ability(source_id, INFECT_ABILITY_GRP_IDS):
             return
 
         seat = affected[0]
@@ -3125,7 +3180,7 @@ def extract_game_plays(
 
         affected_id = affected[0]
         if affected_id in (1, 2):
-            counter_name = player_counter_names.get(raw_type)
+            counter_name = PLAYER_COUNTER_NAMES.get(raw_type)
             if not counter_name:
                 return
             player_counters[(affected_id, counter_name)] += amount
@@ -3255,6 +3310,49 @@ def extract_game_plays(
                 "affectedIds": ann.get("affectedIds"),
                 "details": ann.get("details"),
             }
+
+    def handle_annotation(ann, gsm, msg):
+        """Deduplicate one Arena annotation and route it to the right handler."""
+        if debug_annotations:
+            record_debug(ann)
+
+        key = annotation_key(ann, gsm, msg)
+        if key in seen_annotations:
+            return
+        seen_annotations.add(key)
+
+        ann_types = set(ann.get("type") or [])
+        if "AnnotationType_ObjectIdChanged" in ann_types:
+            note_object_id_change(ann)
+        elif "AnnotationType_AbilityInstanceCreated" in ann_types:
+            flush_pending_cast_for_affector(ann.get("affectorId"))
+            is_triggered_ability = not action_activates_source(gsm, ann.get("affectorId"))
+            for affected_id in ann.get("affectedIds") or []:
+                if is_triggered_ability:
+                    ability_trigger_ids.add(affected_id)
+                obj = objects.get(affected_id)
+                if not obj:
+                    continue
+                flush_pending_cast_for_affector(affected_id)
+                label = object_label_from_object(obj)
+                if label:
+                    remembered_object_labels[affected_id] = label
+                    stack_display_names[affected_id] = label
+        elif "AnnotationType_ZoneTransfer" in ann_types:
+            emit_zone_transfer(ann, gsm)
+        elif "AnnotationType_ModifiedLife" in ann_types:
+            emit_life_change(ann, gsm)
+        elif "AnnotationType_ChoiceResult" in ann_types:
+            emit_choice_result(ann, gsm)
+        elif "AnnotationType_DamageDealt" in ann_types:
+            emit_commander_damage(ann, gsm)
+            emit_infect_damage(ann, gsm)
+            emit_no_combat_damage(ann, gsm)
+        elif (
+            "AnnotationType_CounterAdded" in ann_types
+            or "AnnotationType_CounterRemoved" in ann_types
+        ):
+            emit_counter_change(ann, gsm)
 
     def compact_json(value):
         """Render a short one-line JSON sample for debug summaries."""
@@ -3467,66 +3565,7 @@ def extract_game_plays(
 
                         match_id = gsm.get("gameInfo", {}).get("matchID")
                         if match_id and match_id != current_match:
-                            finalize_current_match()
-                            current_match = match_id
-                            current_match_number += 1
-                            current_match_lines = []
-                            current_match_record = {
-                                "number": current_match_number,
-                                "match_id": current_match,
-                                "lines": current_match_lines,
-                                "events": [],
-                                "debug_hits": [],
-                                "debug_seen_objects": set(),
-                                "choice_events": [],
-                                "target_events": [],
-                                "trigger_events": [],
-                                "has_result": False,
-                                "saw_postgame_payload": False,
-                                "postgame_hint": None,
-                                "finalized": False,
-                            }
-                            transcript_matches.append(current_match_record)
-                            event_index = 0
-                            current_turn = None
-                            current_turn_info = {}
-                            last_game_state_id = None
-                            current_game_has_commanders = game_has_commanders(gsm.get("gameInfo"))
-                            known_local_seat = None
-                            zones.clear()
-                            objects.clear()
-                            players.clear()
-                            team_to_seats.clear()
-                            seen_combat.clear()
-                            seen_commander_damage.clear()
-                            seen_no_combat_damage.clear()
-                            seen_enters_attacking.clear()
-                            remembered_object_labels.clear()
-                            stack_display_names.clear()
-                            ability_trigger_ids.clear()
-                            ability_source_names.clear()
-                            pending_stack_casts.clear()
-                            pending_mill_group = None
-                            pending_life_groups.clear()
-                            pending_death_events.clear()
-                            active_effects.clear()
-                            commander_grps_by_seat.clear()
-                            commander_instance_ids.clear()
-                            commander_cast_counts.clear()
-                            commander_damage.clear()
-                            player_counters.clear()
-                            object_counters.clear()
-                            persistent_annotations.clear()
-                            known_targets_by_source.clear()
-                            known_target_names_by_source.clear()
-                            known_target_ability_ids_by_source.clear()
-                            emit(f"===== GAME {current_match_number}: MATCH {current_match} =====")
-                            game_type_line = format_game_type(
-                                gsm.get("gameInfo"),
-                                gsm.get("players"),
-                            )
-                            if game_type_line:
-                                emit(game_type_line)
+                            start_match(match_id, gsm)
 
                         game_state_id = gsm.get("gameStateId")
                         if (
@@ -3562,51 +3601,7 @@ def extract_game_plays(
                         emit_combat_events(gsm)
 
                         for ann in gsm.get("annotations", []):
-                            if debug_annotations:
-                                record_debug(ann)
-
-                            key = annotation_key(ann, gsm, msg)
-                            if key in seen_annotations:
-                                continue
-                            seen_annotations.add(key)
-
-                            ann_types = set(ann.get("type") or [])
-                            if "AnnotationType_ObjectIdChanged" in ann_types:
-                                note_object_id_change(ann)
-                            elif "AnnotationType_AbilityInstanceCreated" in ann_types:
-                                # Arena can create a triggered ability before the source
-                                # spell's later Resolve annotation. Emit any delayed
-                                # source cast here so the ability does not appear first.
-                                flush_pending_cast_for_affector(ann.get("affectorId"))
-                                is_triggered_ability = not action_activates_source(
-                                    gsm,
-                                    ann.get("affectorId"),
-                                )
-                                for affected_id in ann.get("affectedIds") or []:
-                                    if is_triggered_ability:
-                                        ability_trigger_ids.add(affected_id)
-                                    obj = objects.get(affected_id)
-                                    if obj:
-                                        flush_pending_cast_for_affector(affected_id)
-                                        label = object_label_from_object(obj)
-                                        if label:
-                                            remembered_object_labels[affected_id] = label
-                                            stack_display_names[affected_id] = label
-                            elif "AnnotationType_ZoneTransfer" in ann_types:
-                                emit_zone_transfer(ann, gsm)
-                            elif "AnnotationType_ModifiedLife" in ann_types:
-                                emit_life_change(ann, gsm)
-                            elif "AnnotationType_ChoiceResult" in ann_types:
-                                emit_choice_result(ann, gsm)
-                            elif "AnnotationType_DamageDealt" in ann_types:
-                                emit_commander_damage(ann, gsm)
-                                emit_infect_damage(ann, gsm)
-                                emit_no_combat_damage(ann, gsm)
-                            elif (
-                                "AnnotationType_CounterAdded" in ann_types
-                                or "AnnotationType_CounterRemoved" in ann_types
-                            ):
-                                emit_counter_change(ann, gsm)
+                            handle_annotation(ann, gsm, msg)
 
                         emit_match_results(gsm)
 
