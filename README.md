@@ -15,13 +15,37 @@ Game type: Constructed Brawl (25 starting life)
 ...
 
 === Turn 18: Opponent ===
+My hand: Sheltered by Ghosts; Vanquisher's Banner
+My board:
+  Lands: Untapped: Emeria, Shattered Skyclave; Tapped: 4x Plains
+  Artifacts/Enchantments: Untapped: Mox Amber; Oketra's Monument
+  Creatures: Untapped: Enduring Angel (+2/+2 from counters) (summoning sick); Giada, Font of Hope; Lyra Dawnbringer (+1/+1 from counters); 2x Warrior; Warrior (summoning sick)
+  Library: 81 cards
+  Command: (empty)
+  Graveyard: (empty)
+  Exile: Plains; Starnheim Aspirant; Stroke of Midnight; Swords to Plowshares; unknown card
+Opponent's hand: 2 unknown cards
+Opponent's board:
+  Lands: Untapped: Bojuka Bog; Forest; 3x Island; Nykthos, Shrine to Nyx (owned by me); Thriving Grove; Thriving Isle
+  Artifacts/Enchantments: (empty)
+  Creatures: Untapped: Crabomination; Human; Rottenmouth Viper (Blight counter); Steel Seraph (owned by me)
+  Library: 84 cards
+  Command: Kotis, Sibsig Champion [next commander tax +2]
+  Graveyard: Counterspell; River's Rebuke; Zero Point Ballad
+  Exile: Gonti, Night Minister
+Current State:
+  My next commander tax for Giada, Font of Hope is +4
+  Giada, Font of Hope has dealt 2 commander damage to Opponent
+
+-- Beginning - draw --
+Opponent draws a card
 Opponent casts Mutable Explorer
 Opponent plays Plains
 Opponent casts Insidious Roots
 
 -- Combat - attackers --
 Opponent attacks me with Crabomination; Steel Seraph; and Rottenmouth Viper
-2x I sacrifice Warrior
+2x Rottenmouth Viper trigger: I sacrifice Warrior
 
 -- Combat - blockers --
 Warrior blocks Crabomination
@@ -67,9 +91,14 @@ Current State:
   My next commander tax for Giada, Font of Hope is +4
   Opponent's next commander tax for Kotis, Sibsig Champion is +4
   Giada, Font of Hope has dealt 2 commander damage to Opponent
+
+-- Beginning - draw --
+I draw Plains
 I play Plains
 I cast Sheltered by Ghosts targeting Giada, Font of Hope
+Sheltered by Ghosts becomes attached to Giada, Font of Hope
 Sheltered by Ghosts trigger exiles Kotis, Sibsig Champion
+Kotis, Sibsig Champion moves to command zone
 I choose Angel for Vanquisher's Banner (creature type)
 I cast Vanquisher's Banner
 
@@ -92,7 +121,7 @@ Winner: Me
 
 ```
 
-It can also print board state, hands, graveyards, exile, commanders, attacks, blocks, life changes, mulligans, and match results when those details are available in the log.
+It can also print board state, hands, graveyards, exile, commanders, attacks, blocks, damage, draws, reveals, scry/surveil/seek/conjure movements, attachments, control changes, life changes, mulligans, and match results when those details are available in the log.
 
 It also tries to capture player choices when Arena records them in the structured game events, such as card type, creature type, and colour choices.
 

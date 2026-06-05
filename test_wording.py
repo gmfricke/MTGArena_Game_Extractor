@@ -49,6 +49,7 @@ from mtga_extract_games import (
     phrase_choice_value,
     phrase_death,
     phrase_enters_attacking,
+    phrase_draw,
     phrase_grouped_deaths,
     phrase_incomplete_game_notice,
     phrase_life_change,
@@ -56,11 +57,16 @@ from mtga_extract_games import (
     phrase_life_change_summary,
     phrase_library_count,
     phrase_mulligan,
+    phrase_move_to_zone,
     phrase_mill_summary,
     phrase_player_has_counter,
     phrase_player_counter_change,
     phrase_player_action,
     phrase_result,
+    phrase_sacrifice,
+    phrase_scry,
+    phrase_shuffle,
+    phrase_source_action,
     phrase_zone_change,
     find_target_like_paths,
     format_game_type,
@@ -659,6 +665,25 @@ class WordingTests(unittest.TestCase):
         )
         self.assertEqual(phrase_death("Me", "Giada, Font of Hope"), "My Giada, Font of Hope dies")
         self.assertEqual(phrase_death(None, "Angel"), "Angel dies")
+
+    def test_extra_event_wording(self):
+        self.assertEqual(phrase_draw("Me", "Plains", True), "I draw Plains")
+        self.assertEqual(phrase_draw("Opponent", "Plains", False), "Opponent draws a card")
+        self.assertEqual(
+            phrase_sacrifice("Rottenmouth Viper trigger", "Me", "Warrior"),
+            "Rottenmouth Viper trigger: I sacrifice Warrior",
+        )
+        self.assertEqual(
+            phrase_move_to_zone("Tamiyo ability", "Opponent", "put", "Time Warp", "hand", "into"),
+            "Tamiyo ability: Opponent puts Time Warp into hand",
+        )
+        self.assertEqual(phrase_scry("Me", ["Plains"], []), "I scry top: Plains")
+        self.assertEqual(phrase_scry("Opponent", ["a card"], []), "Opponent scries top: a card")
+        self.assertEqual(phrase_shuffle(None, "Me"), "I shuffle my library")
+        self.assertEqual(
+            phrase_source_action("Cultivate", "Opponent puts Forest into hand"),
+            "Cultivate: Opponent puts Forest into hand",
+        )
 
     def test_grouped_identical_token_deaths(self):
         self.assertEqual(

@@ -1037,6 +1037,53 @@ def phrase_zone_change(source: str | None, verb: str, target: str) -> str:
     return f"{target} is {passive.get(verb, verb)}"
 
 
+def phrase_source_action(source: str | None, text: str) -> str:
+    """Prefix an event with its source when Arena exposes a useful source."""
+    return f"{source}: {text}" if source else text
+
+
+def phrase_draw(label: str, name: str, visible: bool) -> str:
+    """Render draws without revealing hidden opponent cards."""
+    card_text = name if visible else "a card"
+    return phrase_player_action(label, "draw", card_text)
+
+
+def phrase_sacrifice(source: str | None, label: str, name: str) -> str:
+    """Render sacrifice events, keeping source-trigger context when available."""
+    return phrase_source_action(source, phrase_player_action(label, "sacrifice", name))
+
+
+def phrase_move_to_zone(
+    source: str | None,
+    label: str,
+    verb: str,
+    name: str,
+    zone: str,
+    preposition: str = "to",
+) -> str:
+    """Render visible non-cast zone movements such as seek, return, or conjure."""
+    text = phrase_player_action(label, verb, f"{name} {preposition} {zone}")
+    return phrase_source_action(source, text)
+
+
+def phrase_scry(label: str, top_names: list[str], bottom_names: list[str]) -> str:
+    """Render Arena's exposed scry ordering without inventing hidden choices."""
+    parts = []
+    if top_names:
+        parts.append(f"top: {joined_semicolon_list(top_names)}")
+    if bottom_names:
+        parts.append(f"bottom: {joined_semicolon_list(bottom_names)}")
+    if not parts:
+        parts.append("no cards moved")
+    return phrase_player_action(label, "scry", "; ".join(parts), third_person="scries")
+
+
+def phrase_shuffle(source: str | None, label: str) -> str:
+    """Render library shuffles in player voice."""
+    library = "my library" if label == "Me" else "their library"
+    return phrase_source_action(source, phrase_player_action(label, "shuffle", library))
+
+
 def phrase_concede_result(winner: str, scope_text: str) -> list[str]:
     """Render concession results as two concise narrative lines."""
     loser = "Opponent" if winner == "Me" else "Me" if winner == "Opponent" else None
@@ -1863,6 +1910,7 @@ def extract_game_plays(
     seen_damage_events = set()
     seen_no_combat_damage = set()
     seen_enters_attacking = set()
+    seen_revealed_cards = set()
     remembered_object_labels = {}
     stack_display_names = {}
     emitted_cast_instance_ids = set()
@@ -2077,6 +2125,7 @@ def extract_game_plays(
             seen_damage_events,
             seen_no_combat_damage,
             seen_enters_attacking,
+            seen_revealed_cards,
             ability_trigger_ids,
             commander_instance_ids,
             commander_cast_counts,
@@ -2264,6 +2313,55 @@ def extract_game_plays(
         """Return the seat that owns a zone, when Arena exposes one."""
         zone = zones.get(zone_id, {})
         return zone.get("ownerSeatId")
+
+    def zone_label(zone_id):
+        """Return a short readable zone name for movement transcript lines."""
+        zone_type = zones.get(zone_id, {}).get("type")
+        labels = {
+            "ZoneType_Battlefield": "the battlefield",
+            "ZoneType_Command": "command zone",
+            "ZoneType_Exile": "exile",
+            "ZoneType_Graveyard": "graveyard",
+            "ZoneType_Hand": "hand",
+            "ZoneType_Library": "library",
+            "ZoneType_Revealed": "revealed cards",
+            "ZoneType_Stack": "the stack",
+        }
+        return labels.get(zone_type, clean_arena_enum(zone_type, "ZoneType_") or "unknown zone")
+
+    def zone_move_owner(ann, details):
+        """Prefer the player whose destination changed for draw/seek/put style events."""
+        return owner_label(
+            zone_owner(details.get("zone_dest"))
+            or zone_owner(details.get("zone_src"))
+            or object_owner((ann.get("affectedIds") or [None])[0])
+            or object_owner(ann.get("affectorId"))
+            or current_turn_info.get("activePlayer")
+        )
+
+    def visible_to_player(iid, seat):
+        """Return true when a moved card's identity is visible enough to print."""
+        if seat is None:
+            return False
+        if owner_label(seat) == "Me":
+            return True
+        name = card_label_for_snapshot(iid)
+        return name not in {"unknown card", "a face-down card"}
+
+    def readable_move_name(iid, category):
+        """Hide raw Arena ids for cards whose names are not currently known."""
+        name = card_label(iid)
+        if (
+            not name
+            or name in {"unknown card", "a face-down card"}
+            or name.startswith(("instance ", "grpId "))
+        ):
+            if category == "Conjure":
+                return "a conjured card"
+            if category == "Draft":
+                return "a drafted card"
+            return "a card"
+        return name
 
     def hand_count_for_seat(seat):
         """Count cards in a player's hand zone when the game state exposes it."""
@@ -3233,13 +3331,94 @@ def extract_game_plays(
         elif category == "Sacrifice":
             flush_pending_event_groups()
             flush_pending_cast_for_affector(ann.get("affectorId"))
-            emit(phrase_player_action(owner, "sacrifice", name))
+            source = source_label(ann.get("affectorId"))
+            if source == name or ann.get("affectorId") == iid:
+                source = None
+            emit(phrase_sacrifice(source, owner, name))
             remove_active_effects_for_source(iid)
         elif category == "Mill":
             source = mill_source_from_affector(ann.get("affectorId"))
             mill_owner = owner_label(zone_owner(details.get("zone_src")) or object_owner(iid))
             if not add_pending_mill(source, mill_owner):
                 flush_pending_event_groups()
+        elif category == "Draw":
+            flush_pending_event_groups()
+            seat = zone_owner(details.get("zone_dest")) or object_owner(iid)
+            label = owner_label(seat)
+            visible = visible_to_player(iid, seat)
+            emit(phrase_draw(label, readable_move_name(iid, category), visible))
+        elif category in {"Put", "Seek"}:
+            flush_pending_event_groups()
+            source = source_label(ann.get("affectorId"))
+            label = zone_move_owner(ann, details)
+            verb = "seek" if category == "Seek" else "put"
+            emit(
+                phrase_move_to_zone(
+                    source,
+                    label,
+                    verb,
+                    readable_move_name(iid, category),
+                    zone_label(details.get("zone_dest")),
+                    "into",
+                )
+            )
+        elif category == "Return":
+            flush_pending_event_groups()
+            source = source_label(ann.get("affectorId"))
+            label = zone_move_owner(ann, details)
+            emit(
+                phrase_move_to_zone(
+                    source,
+                    label,
+                    "return",
+                    readable_move_name(iid, category),
+                    zone_label(details.get("zone_dest")),
+                )
+            )
+        elif category == "Conjure":
+            flush_pending_event_groups()
+            source = source_label(ann.get("affectorId"))
+            label = zone_move_owner(ann, details)
+            emit(
+                phrase_move_to_zone(
+                    source,
+                    label,
+                    "conjure",
+                    readable_move_name(iid, category),
+                    zone_label(details.get("zone_dest")),
+                    "into",
+                )
+            )
+        elif category == "Surveil":
+            flush_pending_event_groups()
+            source = source_label(ann.get("affectorId"))
+            label = zone_move_owner(ann, details)
+            emit(
+                phrase_source_action(
+                    source,
+                    phrase_player_action(
+                        label,
+                        "surveil",
+                        f"{readable_move_name(iid, category)} into {zone_label(details.get('zone_dest'))}",
+                    ),
+                )
+            )
+        elif category == "Draft":
+            flush_pending_event_groups()
+            source = source_label(ann.get("affectorId"))
+            label = zone_move_owner(ann, details)
+            emit(
+                phrase_source_action(
+                    source,
+                    phrase_player_action(label, "draft", readable_move_name(iid, category)),
+                )
+            )
+        elif category == "SBA_Commander":
+            flush_pending_event_groups()
+            emit(f"{name} moves to command zone")
+        elif category == "nil":
+            flush_pending_event_groups()
+            emit(f"{name} moves to {zone_label(details.get('zone_dest'))}")
 
     def emit_life_change(ann, gsm):
         """Emit life gain/loss lines from ModifiedLife annotations."""
@@ -3624,6 +3803,129 @@ def extract_game_plays(
         if object_counters[affected_id][raw_type] <= 0:
             del object_counters[affected_id][raw_type]
 
+    def emit_scry(ann, gsm):
+        """Emit scry choices when Arena exposes the final top/bottom card ids."""
+        details = detail_dict(ann.get("details"))
+        top_ids = details.get("topIds") or []
+        bottom_ids = details.get("bottomIds") or []
+        if isinstance(top_ids, int):
+            top_ids = [top_ids]
+        if isinstance(bottom_ids, int):
+            bottom_ids = [bottom_ids]
+        key = (
+            current_match,
+            gsm.get("gameStateId"),
+            ann.get("id"),
+            tuple(top_ids),
+            tuple(bottom_ids),
+        )
+        if key in seen_state_events:
+            return
+        seen_state_events.add(key)
+        chooser_seat = object_owner(ann.get("affectorId"))
+        if chooser_seat is None and ann.get("affectedIds"):
+            chooser_seat = object_owner(ann.get("affectedIds")[0])
+        if chooser_seat is None:
+            chooser_seat = current_turn_info.get("activePlayer")
+        flush_pending_event_groups()
+        emit(
+            phrase_scry(
+                owner_label(chooser_seat),
+                [readable_move_name(iid, "Scry") for iid in top_ids],
+                [readable_move_name(iid, "Scry") for iid in bottom_ids],
+            )
+        )
+
+    def emit_shuffle(ann, gsm):
+        """Emit library shuffles without listing every remapped library id."""
+        affected = ann.get("affectedIds") or []
+        if not affected:
+            return
+        seat = affected[0] if affected[0] in (1, 2) else object_owner(affected[0])
+        key = (current_match, gsm.get("gameStateId"), ann.get("id"), seat)
+        if key in seen_state_events:
+            return
+        seen_state_events.add(key)
+        flush_pending_event_groups()
+        emit(phrase_shuffle(source_label(ann.get("affectorId")), owner_label(seat)))
+
+    def emit_revealed_card(ann, gsm):
+        """Emit newly revealed cards once, while ignoring later reveal cleanup."""
+        affected = ann.get("affectedIds") or []
+        if not affected:
+            return
+        iid = affected[0]
+        name = readable_move_name(iid, "Reveal")
+        seat = object_owner(iid) or object_owner(ann.get("affectorId"))
+        if seat is None:
+            seat = current_turn_info.get("activePlayer")
+        if name in {"unknown card", "a face-down card"} or (name == "a card" and seat is None):
+            return
+        key = (current_match, iid, name)
+        if key in seen_revealed_cards:
+            return
+        seen_revealed_cards.add(key)
+        flush_pending_event_groups()
+        emit(phrase_player_action(owner_label(seat), "reveal", name))
+
+    def emit_attachment_created(ann, gsm):
+        """Emit newly created attachments such as Auras and Equipment."""
+        attachment_id = ann.get("affectorId")
+        targets = ann.get("affectedIds") or []
+        if attachment_id is None or not targets:
+            return
+        attachment = card_label(attachment_id)
+        target = card_label(targets[0])
+        key = (current_match, gsm.get("gameStateId"), ann.get("id"), attachment_id, targets[0])
+        if key in seen_state_events:
+            return
+        seen_state_events.add(key)
+        flush_pending_event_groups()
+        emit(f"{attachment} becomes attached to {target}")
+
+    def emit_controller_changed(ann, gsm):
+        """Emit control changes using the new controller from the current state."""
+        affected = ann.get("affectedIds") or []
+        if not affected:
+            return
+        iid = affected[0]
+        controller = object_controller(iid)
+        if controller is None:
+            return
+        key = (current_match, gsm.get("gameStateId"), ann.get("id"), iid, controller)
+        if key in seen_state_events:
+            return
+        seen_state_events.add(key)
+        flush_pending_event_groups()
+        emit(
+            phrase_player_action(
+                owner_label(controller),
+                "gain",
+                f"control of {card_label(iid)}",
+            )
+        )
+
+    def emit_replacement_effect(ann, gsm):
+        """Emit replacement/prevention effects when Arena marks one as applied."""
+        source = source_label(ann.get("affectorId"))
+        if not source:
+            return
+        affected = ann.get("affectedIds") or []
+        target = target_label(affected[0]) if affected else None
+        key = (
+            current_match,
+            gsm.get("gameStateId"),
+            ann.get("id"),
+            ann.get("affectorId"),
+            tuple(affected),
+        )
+        if key in seen_state_events:
+            return
+        seen_state_events.add(key)
+        suffix = f" to {target}" if target else ""
+        flush_pending_event_groups()
+        emit(f"{source} replacement effect applies{suffix}")
+
     def update_state(gsm):
         """Merge a full/diff game-state message into the local state model."""
         for team in gsm.get("teams", []):
@@ -3782,6 +4084,18 @@ def extract_game_plays(
             or "AnnotationType_CounterRemoved" in ann_types
         ):
             emit_counter_change(ann, gsm)
+        elif "AnnotationType_Scry" in ann_types:
+            emit_scry(ann, gsm)
+        elif "AnnotationType_Shuffle" in ann_types:
+            emit_shuffle(ann, gsm)
+        elif "AnnotationType_RevealedCardCreated" in ann_types:
+            emit_revealed_card(ann, gsm)
+        elif "AnnotationType_AttachmentCreated" in ann_types:
+            emit_attachment_created(ann, gsm)
+        elif "AnnotationType_ControllerChanged" in ann_types:
+            emit_controller_changed(ann, gsm)
+        elif "AnnotationType_ReplacementEffectApplied" in ann_types:
+            emit_replacement_effect(ann, gsm)
 
     def compact_json(value):
         """Render a short one-line JSON sample for debug summaries."""
