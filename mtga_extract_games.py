@@ -427,7 +427,12 @@ The card database is usually the newest Raw_CardDatabase_*.mtga file here:
 """
 
 
-def resolve_input_paths(player_log_arg: Path | None, carddb_arg: Path | None) -> tuple[Path, Path, str | None]:
+def resolve_input_paths(
+    player_log_arg: Path | None,
+    carddb_arg: Path | None,
+    *,
+    live: bool = False,
+) -> tuple[Path, Path, str | None]:
     """Resolve CLI/env/autodiscovered paths and return an optional warning."""
     player_log = (
         player_log_arg.expanduser()
@@ -450,7 +455,7 @@ def resolve_input_paths(player_log_arg: Path | None, carddb_arg: Path | None) ->
 
     warning = None
     if player_log_arg is None or carddb_arg is None:
-        all_log_paths = player_log_paths_for_reading(player_log)
+        all_log_paths = player_log_paths_for_reading(player_log, live)
         log_lines = ["Using logs:"]
         log_lines.extend(f"  {log_path}" for log_path in all_log_paths)
         log_lines.append(f"Using card database: {carddb}")
@@ -4221,7 +4226,11 @@ No pip install step is required; this script only uses Python's standard library
     args = parser.parse_args()
 
     try:
-        player_log, carddb, path_warning = resolve_input_paths(args.player_log, args.carddb)
+        player_log, carddb, path_warning = resolve_input_paths(
+            args.player_log,
+            args.carddb,
+            live=args.live,
+        )
     except FileNotFoundError as exc:
         parser.exit(2, f"{exc}\n")
     if path_warning:

@@ -559,6 +559,30 @@ class WordingTests(unittest.TestCase):
             self.assertIn("Using logs:", warning)
             self.assertIn(str(player_log), warning)
 
+    def test_live_path_warning_only_lists_current_log(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            player_log = Path(tmpdir) / "Player.log"
+            previous_log = Path(tmpdir) / "Player-prev.log"
+            carddb = Path(tmpdir) / "Raw_CardDatabase_test.mtga"
+            player_log.write_text("", encoding="utf-8")
+            previous_log.write_text("", encoding="utf-8")
+            carddb.write_text("", encoding="utf-8")
+
+            with patch.dict(
+                "os.environ",
+                {"LOG": str(player_log), "CARDDB": str(carddb)},
+                clear=False,
+            ):
+                resolved_log, _resolved_carddb, warning = resolve_input_paths(
+                    None,
+                    None,
+                    live=True,
+                )
+
+            self.assertEqual(resolved_log, player_log)
+            self.assertIn(str(player_log), warning)
+            self.assertNotIn(str(previous_log), warning)
+
     def test_path_resolution_error_explains_setup(self):
         missing_log = Path("/tmp/definitely-missing-mtga-player-log")
         missing_carddb = Path("/tmp/definitely-missing-mtga-carddb.mtga")
