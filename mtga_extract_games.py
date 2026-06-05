@@ -1420,8 +1420,6 @@ def card_is_nonland_permanent(obj: dict | None, metadata: dict | None) -> bool:
 def available_resource_lines(resources: dict[str, list[str]]) -> list[str]:
     """Format the optional Available Resources block for a turn-state snapshot."""
     sections = [
-        ("playable_lands_from_graveyard", "Playable lands from graveyard"),
-        ("conduit_candidates", "Conduit of Worlds candidates"),
         ("potential_graveyard_exile_plays", "Other playable cards"),
     ]
     lines = []
@@ -2262,23 +2260,8 @@ def extract_game_plays(
     def available_resources_for_seat(seat):
         """Find high-confidence cards playable or usable outside the hand."""
         resources = defaultdict(list)
-        battlefield_names = controlled_battlefield_names(seat)
         graveyard_entries = zone_object_entries("ZoneType_Graveyard", seat)
         exile_entries = zone_object_entries("ZoneType_Exile", seat)
-
-        has_crucible = "Crucible of Worlds" in battlefield_names
-        has_conduit = "Conduit of Worlds" in battlefield_names
-        if has_crucible or has_conduit:
-            for entry in graveyard_entries:
-                if card_is_land(entry["object"], entry["metadata"]):
-                    resources["playable_lands_from_graveyard"].append(card_resource_name(entry))
-
-        if has_conduit:
-            for entry in graveyard_entries:
-                if card_is_nonland_permanent(entry["object"], entry["metadata"]):
-                    resources["conduit_candidates"].append(
-                        card_resource_name(entry, "limited by Conduit, timing/cost not checked")
-                    )
 
         for zone_name, entries in (
             ("graveyard", graveyard_entries),
@@ -2897,15 +2880,6 @@ def extract_game_plays(
                 third_person="chooses",
             )
         )
-        if source == "Serra's Emissary" and domain == 4:
-            effect_text = (
-                f"{subject_pronoun(chooser)} "
-                f"{present_tense_verb(chooser, 'have', 'has')} "
-                f"protection from {value_text.lower()}s via {source}"
-            )
-            state_key = ("serra_protection", source_id)
-            add_active_effect(state_key, effect_text, source_id=source_id)
-            emit(effect_text)
 
     def note_commander_cast(instance_id, fallback_grp_id=None):
         """Track command-zone casts as commander casts and report current tax."""
@@ -2989,67 +2963,37 @@ def extract_game_plays(
         if not annotations:
             return
 
-        teferi_sources = {
-            ann.get("affectorId")
-            for ann in annotations
-            if "AnnotationType_PhasedOut" in set(ann.get("type") or [])
-            and card_label(ann.get("affectorId")) == "Teferi's Protection"
-        }
-        if teferi_sources:
-            phased_counts = Counter()
-            for ann in annotations:
-                if "AnnotationType_PhasedOut" not in set(ann.get("type") or []):
+        phased_out_counts = Counter()
+        phased_out_sources = {}
+        for ann in annotations:
+            if "AnnotationType_PhasedOut" not in set(ann.get("type") or []):
+                continue
+            source_id = ann.get("affectorId")
+            for affected_id in ann.get("affectedIds") or []:
+                owner = object_owner(affected_id)
+                if owner is None:
                     continue
-                for affected_id in ann.get("affectedIds") or []:
-                    owner = object_owner(affected_id)
-                    if owner is not None:
-                        phased_counts[owner] += 1
+                phased_out_counts[owner] += 1
+                phased_out_sources.setdefault(owner, source_id)
 
-            for seat, count in sorted(phased_counts.items()):
-                source_id = next(iter(teferi_sources))
-                source = card_label(source_id)
-                label = owner_label(seat)
-                key = (current_match, gsm.get("gameStateId"), "teferi_phase", seat)
-                if key not in seen_state_events:
-                    seen_state_events.add(key)
-                    flush_pending_event_groups()
-                    plural = "permanent" if count == 1 else "permanents"
-                    emit(
-                        phrase_player_action(
-                            label,
-                            "phase",
-                            f"out {count} {plural} via {source}",
-                            third_person="phases",
-                        )
-                    )
-
-                protection_text = (
-                    f"{subject_pronoun(label)} "
-                    f"{present_tense_verb(label, 'have', 'has')} "
-                    f"protection from everything until next turn via {source}"
+        for seat, count in sorted(phased_out_counts.items()):
+            source = source_label(phased_out_sources.get(seat))
+            label = owner_label(seat)
+            key = (current_match, gsm.get("gameStateId"), "phase_out", seat)
+            if key in seen_state_events:
+                continue
+            seen_state_events.add(key)
+            flush_pending_event_groups()
+            plural = "permanent" if count == 1 else "permanents"
+            suffix = f" via {source}" if source else ""
+            emit(
+                phrase_player_action(
+                    label,
+                    "phase",
+                    f"out {count} {plural}{suffix}",
+                    third_person="phases",
                 )
-                life_text = (
-                    f"{possessive_pronoun(label)} life total can't change "
-                    f"until next turn via {source}"
-                )
-                add_active_effect(
-                    ("teferi_protection", seat),
-                    protection_text,
-                    source_id=source_id,
-                    until="next_turn",
-                )
-                add_active_effect(
-                    ("teferi_life_total", seat),
-                    life_text,
-                    source_id=source_id,
-                    until="next_turn",
-                )
-                for text in (protection_text, life_text):
-                    state_key = (current_match, gsm.get("gameStateId"), text)
-                    if state_key not in seen_state_events:
-                        seen_state_events.add(state_key)
-                        flush_pending_event_groups()
-                        emit(text)
+            )
 
         phased_in_counts = Counter()
         for ann in annotations:

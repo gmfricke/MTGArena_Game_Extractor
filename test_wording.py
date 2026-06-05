@@ -707,10 +707,6 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(
             available_resource_lines(
                 {
-                    "playable_lands_from_graveyard": ["Riveteers Overlook"],
-                    "conduit_candidates": [
-                        "Springheart Nantuko [limited by Conduit, timing/cost not checked]"
-                    ],
                     "potential_graveyard_exile_plays": [
                         "Faithless Looting [flashback from graveyard, cost not checked]"
                     ],
@@ -718,10 +714,6 @@ class WordingTests(unittest.TestCase):
             ),
             [
                 "Available Resources:",
-                "  Playable lands from graveyard:",
-                "    Riveteers Overlook",
-                "  Conduit of Worlds candidates:",
-                "    Springheart Nantuko [limited by Conduit, timing/cost not checked]",
                 "  Other playable cards:",
                 "    Faithless Looting [flashback from graveyard, cost not checked]",
             ],
