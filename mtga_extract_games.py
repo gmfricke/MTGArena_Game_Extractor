@@ -1305,6 +1305,42 @@ def combine_repeated_damage_life_sequences(lines: list[str]) -> list[str]:
     return combined
 
 
+def move_copy_resolves_after_revealed_returns(lines: list[str]) -> list[str]:
+    """Keep copied bounce effects readable when Arena exposes the next target early."""
+    reordered = []
+    index = 0
+    while index < len(lines):
+        if index + 2 >= len(lines):
+            reordered.append(lines[index])
+            index += 1
+            continue
+
+        resolve_match = re.fullmatch(r"(A copy of .+) resolves", lines[index])
+        reveal_match = re.fullmatch(r"(I|Opponent|Player \d+) reveals? (.+)", lines[index + 1])
+        if not resolve_match or not reveal_match:
+            reordered.append(lines[index])
+            index += 1
+            continue
+
+        source = resolve_match.group(1)
+        revealed_name = reveal_match.group(2)
+        return_line = lines[index + 2]
+        return_pattern = re.escape(source) + r": (I|Opponent|Player \d+) returns? " + re.escape(revealed_name) + r" to hand"
+        if not re.fullmatch(return_pattern, return_line):
+            reordered.append(lines[index])
+            index += 1
+            continue
+
+        reordered.extend([lines[index + 1], return_line])
+        cursor = index + 3
+        while cursor < len(lines) and re.fullmatch(r"(I|Opponent|Player \d+|\d+x (?:I|Opponent|Player \d+)) draws? .+", lines[cursor]):
+            reordered.append(lines[cursor])
+            cursor += 1
+        reordered.append(lines[index])
+        index = cursor
+    return reordered
+
+
 def joined_english_list(items: list[str]) -> str:
     """Join names as A, B, and C for transcript summaries."""
     if len(items) <= 1:
@@ -1711,7 +1747,9 @@ def cleaned_transcript_lines(lines: list[str]) -> list[str]:
     return remove_redundant_match_winner_lines(
         combine_adjacent_attack_lines(
             combine_duplicate_transcript_lines(
-                combine_repeated_damage_life_sequences(lines)
+                move_copy_resolves_after_revealed_returns(
+                    combine_repeated_damage_life_sequences(lines)
+                )
             )
         )
     )

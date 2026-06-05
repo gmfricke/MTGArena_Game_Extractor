@@ -39,6 +39,7 @@ from mtga_extract_games import (
     load_enum_value_names,
     load_grp_id_to_metadata,
     life_change_group_source,
+    move_copy_resolves_after_revealed_returns,
     object_pronoun,
     ownership_summary_part,
     parse_carddb_int_list,
@@ -297,6 +298,25 @@ class WordingTests(unittest.TestCase):
                 "3x A copy of Shock deals 6 damage to me",
                 "I lose 6 life (11)",
                 "3x A copy of Shock resolves",
+            ],
+        )
+
+    def test_copy_resolve_moves_after_revealed_return(self):
+        lines = [
+            "A copy of Repulse resolves",
+            "I reveal Resplendent Angel",
+            "A copy of Repulse: I return Resplendent Angel to hand",
+            "Opponent draws a card",
+            "A copy of Repulse resolves",
+        ]
+        self.assertEqual(
+            move_copy_resolves_after_revealed_returns(lines),
+            [
+                "I reveal Resplendent Angel",
+                "A copy of Repulse: I return Resplendent Angel to hand",
+                "Opponent draws a card",
+                "A copy of Repulse resolves",
+                "A copy of Repulse resolves",
             ],
         )
 
