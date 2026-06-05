@@ -3123,13 +3123,43 @@ def extract_game_plays(
             return
 
         seat = affected[0]
-        key = (current_match, gsm.get("gameStateId"), ann.get("id"), seat, delta)
+        game_state_id = gsm.get("gameStateId")
+
+        def life_key(life_ann, life_seat, life_delta):
+            return (current_match, game_state_id, life_ann.get("id"), life_seat, life_delta)
+
+        key = life_key(ann, seat, delta)
         if key in seen_life_changes:
             return
-        seen_life_changes.add(key)
 
         total = players.get(seat, {}).get("lifeTotal")
         source = source_label(ann.get("affectorId"))
+        if not should_group_life_change_source(source):
+            sign = 1 if delta > 0 else -1
+            batch = []
+            for other in gsm.get("annotations", []):
+                if "AnnotationType_ModifiedLife" not in (other.get("type") or []):
+                    continue
+                other_affected = other.get("affectedIds") or []
+                other_delta = detail_dict(other.get("details")).get("life")
+                if (
+                    not other_affected
+                    or other_affected[0] != seat
+                    or not isinstance(other_delta, int)
+                    or other_delta == 0
+                    or (1 if other_delta > 0 else -1) != sign
+                    or should_group_life_change_source(source_label(other.get("affectorId")))
+                ):
+                    continue
+                batch.append((other, other_delta))
+            if len(batch) > 1:
+                flush_pending_event_groups()
+                for other, other_delta in batch:
+                    seen_life_changes.add(life_key(other, seat, other_delta))
+                emit(phrase_life_change(owner_label(seat), sum(other_delta for _, other_delta in batch), total))
+                return
+
+        seen_life_changes.add(key)
         if should_group_life_change_source(source) or pending_life_groups:
             add_pending_life_change(life_change_group_source(source), owner_label(seat), delta, total)
         else:

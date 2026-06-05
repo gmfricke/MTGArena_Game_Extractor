@@ -23,7 +23,7 @@ Opponent attacks me with Crabomination; Steel Seraph; and Rottenmouth Viper
 Warrior blocks Crabomination
 Lyra Dawnbringer blocks Steel Seraph
 Enduring Angel blocks Rottenmouth Viper
-2x I gain 6 life (27)
+I gain 12 life (27)
 My Steel Seraph dies
 Opponent's Rottenmouth Viper dies
 Warrior dies
@@ -60,11 +60,10 @@ I choose Angel for Vanquisher's Banner (creature type)
 I cast Vanquisher's Banner
 I attack Opponent with Giada, Font of Hope; Lyra Dawnbringer; and Enduring Angel
 Opponent loses 14 life (10)
-2x I gain 7 life (41)
+I gain 14 life (41)
 Commander damage: Giada, Font of Hope deals 5 to Opponent (7 total)
 Opponent loses 12 life (-2)
-I gain 5 life (53)
-I gain 7 life (53)
+I gain 12 life (53)
 
 Winner: Me
 
