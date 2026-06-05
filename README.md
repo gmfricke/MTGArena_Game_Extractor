@@ -29,15 +29,15 @@ Lyra Dawnbringer blocks Steel Seraph
 Enduring Angel blocks Rottenmouth Viper
 
 -- Combat - first strike damage --
-Lyra Dawnbringer deals 6 damage to Steel Seraph
-Enduring Angel deals 6 damage to Rottenmouth Viper
+Lyra Dawnbringer deals 6 damage to Steel Seraph (6/4 damage)
+Enduring Angel deals 6 damage to Rottenmouth Viper (6/6 damage)
 I gain 12 life (27)
 
 -- Combat - damage --
 My Steel Seraph dies
 Opponent's Rottenmouth Viper dies
-Crabomination deals 5 damage to Warrior
-Warrior deals 1 damage to Crabomination
+Crabomination deals 5 damage to Warrior (5/1 damage)
+Warrior deals 1 damage to Crabomination (1/5 damage)
 
 -- Postcombat main --
 Warrior dies

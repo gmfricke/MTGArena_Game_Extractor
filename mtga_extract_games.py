@@ -1085,6 +1085,17 @@ def phrase_damage(source: str | None, damage: int, target: str) -> str:
     return f"{source or 'A source'} deals {damage} damage to {target}"
 
 
+def damage_mark_suffix(marked_damage, toughness) -> str:
+    """Render Arena's marked damage against toughness for damaged permanents."""
+    if not isinstance(marked_damage, int) or marked_damage <= 0:
+        return ""
+    if isinstance(toughness, dict):
+        toughness = toughness.get("value")
+    if isinstance(toughness, int) and toughness > 0:
+        return f" ({marked_damage}/{toughness} damage)"
+    return f" ({marked_damage} damage marked)"
+
+
 def phrase_player_counter_change(label: str, counter_name: str, amount: int, total: int) -> str:
     """Render poison, energy, or experience counter changes on a player."""
     verb = "get" if amount > 0 else "lose"
@@ -3523,7 +3534,9 @@ def extract_game_plays(
         if target_id in (1, 2):
             target = object_pronoun(owner_label(target_id))
         else:
+            target_obj = objects.get(target_id, {})
             target = card_label(target_id)
+            target = f"{target}{damage_mark_suffix(target_obj.get('damage'), target_obj.get('toughness'))}"
         flush_pending_event_groups()
         emit(phrase_damage(source_label(source_id), damage, target))
 

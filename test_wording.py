@@ -30,6 +30,7 @@ from mtga_extract_games import (
     counter_summary_suffix,
     copied_object_label,
     death_label_or_none,
+    damage_mark_suffix,
     default_archive_db_path,
     is_hidden_arena_object,
     load_ability_texts,
@@ -894,6 +895,8 @@ class WordingTests(unittest.TestCase):
             phrase_damage("Lyra Dawnbringer", 6, "Steel Seraph"),
             "Lyra Dawnbringer deals 6 damage to Steel Seraph",
         )
+        self.assertEqual(damage_mark_suffix(6, {"value": 6}), " (6/6 damage)")
+        self.assertEqual(damage_mark_suffix(2, None), " (2 damage marked)")
         self.assertEqual(object_pronoun("Me"), "me")
 
     def test_player_counter_wording(self):
