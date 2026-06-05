@@ -1,10 +1,10 @@
 # MTG Arena Game Extractor
 
-I wanted a tool that gave me my MTG Arena games in plain text so I could review them later and pass them into other software. I could not find anything straightforward that did this, so I wrote this Python program.
+MTG Arena Game Extractor is an open-source MTG Arena log parser that reconstructs complete games from Arena's Player.log and UTC log files and produces human-readable text transcripts.
 
-Since this tool reads logs from a game with frequent updates I expect it to need updating a lot to keep up.
+The tool follows Arena game-state updates, translates internal card IDs into card names using the local Arena card database, and generates turn-by-turn game replays showing board state, hands, combat, spells, commander activity, life totals, graveyards, exile zones, and match results.
 
-MTG Arena writes a lot of useful information into `Player.log`, but it is buried in large JSON messages and most of the gameplay events use internal IDs instead of card names. This script reads the log, follows the game state messages, and uses the local Arena card database to translate card `grpId` values into readable card names.
+I originally wrote it because I wanted a simple way to review MTG Arena games in plain text and feed those transcripts into other tools. I could not find anything that produced detailed text replays from Arena logs, so I built one.
 
 The result is a transcript that looks like:
 
