@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 mtga_transcript.txt
 *.log
+mtga_seen_games.sqlite3
+mtga_seen_games.sqlite3-*

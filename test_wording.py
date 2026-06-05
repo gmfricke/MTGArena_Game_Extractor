@@ -1,4 +1,5 @@
 import unittest
+import os
 import sqlite3
 import tempfile
 from argparse import Namespace
@@ -13,6 +14,8 @@ from mtga_extract_games import (
     attack_phrase,
     attachment_summary_parts,
     append_target_phrase,
+    archive_seen_games,
+    archived_transcript_matches,
     available_resource_lines,
     base_cast_name,
     build_card_name_colors,
@@ -27,6 +30,7 @@ from mtga_extract_games import (
     counter_summary_suffix,
     copied_object_label,
     death_label_or_none,
+    default_archive_db_path,
     is_hidden_arena_object,
     load_ability_texts,
     load_enum_value_names,
@@ -417,6 +421,74 @@ class WordingTests(unittest.TestCase):
             )
             self.assertEqual(player_log_paths_for_reading(player_log, live=True), [player_log])
 
+    def test_archive_logs_are_read_before_player_logs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            player_log = Path(tmpdir) / "Player.log"
+            previous_log = Path(tmpdir) / "Player-prev.log"
+            archive_dir = Path(tmpdir) / "archives"
+            archive_dir.mkdir()
+            older_archive = archive_dir / "UTC_Log - older.log"
+            newer_archive = archive_dir / "UTC_Log - newer.log"
+            for path in (player_log, previous_log, older_archive, newer_archive):
+                path.write_text("", encoding="utf-8")
+            os.utime(older_archive, (100, 100))
+            os.utime(newer_archive, (200, 200))
+
+            with patch(
+                "mtga_extract_games.arena_archive_log_paths",
+                return_value=[older_archive, newer_archive],
+            ):
+                self.assertEqual(
+                    player_log_paths_for_reading(player_log),
+                    [older_archive, newer_archive, previous_log, player_log],
+                )
+
+    def test_seen_games_archive_is_keyed_by_match_id(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "seen.sqlite3"
+            matches = [
+                {
+                    "number": 1,
+                    "match_id": "match-1",
+                    "lines": [
+                        "===== GAME 1: MATCH match-1 =====",
+                        "Game type: Constructed Duel (20 starting life)",
+                        "I attack Opponent with A",
+                        "I attack Opponent with B",
+                        "Winner: Me",
+                    ],
+                    "has_result": True,
+                }
+            ]
+
+            self.assertEqual(archive_seen_games(db_path, matches), (1, 0))
+            matches[0]["number"] = 99
+            self.assertEqual(archive_seen_games(db_path, matches), (0, 1))
+
+            con = sqlite3.connect(db_path)
+            row = con.execute(
+                "SELECT match_id, archive_index, game_number, game_type, has_result, transcript FROM games"
+            ).fetchone()
+            schema_version = con.execute("PRAGMA user_version").fetchone()[0]
+            con.close()
+
+            self.assertEqual(schema_version, 1)
+            self.assertEqual(row[0], "match-1")
+            self.assertEqual(row[1], 1)
+            self.assertEqual(row[2], 1)
+            self.assertEqual(row[3], "Game type: Constructed Duel (20 starting life)")
+            self.assertEqual(row[4], 1)
+            self.assertIn("===== GAME 1: MATCH match-1 =====", row[5])
+            self.assertIn("I attack Opponent with A and B", row[5])
+
+            archived = archived_transcript_matches(db_path)
+            self.assertEqual(archived[0]["number"], 1)
+            self.assertEqual(archived[0]["match_id"], "match-1")
+            self.assertIn("I attack Opponent with A and B", archived[0]["lines"])
+
+    def test_default_archive_db_path_uses_current_directory(self):
+        self.assertEqual(default_archive_db_path(), Path("mtga_seen_games.sqlite3"))
+
     def test_path_resolution_uses_environment_paths(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             player_log = Path(tmpdir) / "Player.log"
@@ -433,7 +505,8 @@ class WordingTests(unittest.TestCase):
 
             self.assertEqual(resolved_log, player_log)
             self.assertEqual(resolved_carddb, carddb)
-            self.assertIn("Using Player.log", warning)
+            self.assertIn("Using logs:", warning)
+            self.assertIn(str(player_log), warning)
 
     def test_path_resolution_error_explains_setup(self):
         missing_log = Path("/tmp/definitely-missing-mtga-player-log")

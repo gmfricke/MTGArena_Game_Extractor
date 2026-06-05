@@ -354,16 +354,43 @@ def likely_player_log_path() -> Path | None:
     )
 
 
+def arena_archive_log_paths(player_log: Path) -> list[Path]:
+    """Find archived macOS Arena GRE logs that precede the current Player logs."""
+    mac_log_path = Path("~/Library/Logs/Wizards Of The Coast/MTGA/Player.log").expanduser()
+    try:
+        if player_log.expanduser().resolve() != mac_log_path.resolve():
+            return []
+    except FileNotFoundError:
+        return []
+
+    archive_dir = Path("~/Library/Application Support/com.wizards.mtga/Logs/Logs").expanduser()
+    return sorted(archive_dir.glob("UTC_Log - *.log"), key=lambda path: path.stat().st_mtime)
+
+
 def player_log_paths_for_reading(player_log: Path, live: bool = False) -> list[Path]:
-    """Return log files to parse, including Arena's rotated previous log."""
+    """Return log files to parse, including Arena's rotated/archive logs."""
     if live:
-        # Live mode tails the current file, so including Player-prev.log would
+        # Live mode tails the current file, so including historical logs would
         # print old games before the current one and would not follow new writes.
         return [player_log]
+
     previous_log = player_log.with_name("Player-prev.log")
-    if player_log.name == "Player.log" and previous_log.exists():
-        return [previous_log, player_log]
-    return [player_log]
+    paths = []
+    if player_log.name == "Player.log":
+        paths.extend(arena_archive_log_paths(player_log))
+        if previous_log.exists():
+            paths.append(previous_log)
+    paths.append(player_log)
+
+    unique_paths = []
+    seen_paths = set()
+    for path in paths:
+        resolved = path.resolve()
+        if resolved in seen_paths:
+            continue
+        seen_paths.add(resolved)
+        unique_paths.append(path)
+    return unique_paths
 
 
 def likely_carddb_path() -> Path | None:
@@ -423,10 +450,9 @@ def resolve_input_paths(player_log_arg: Path | None, carddb_arg: Path | None) ->
 
     warning = None
     if player_log_arg is None or carddb_arg is None:
-        log_lines = [f"Using Player.log: {player_log}"]
         all_log_paths = player_log_paths_for_reading(player_log)
-        if len(all_log_paths) > 1:
-            log_lines.insert(0, f"Using previous log: {all_log_paths[0]}")
+        log_lines = ["Using logs:"]
+        log_lines.extend(f"  {log_path}" for log_path in all_log_paths)
         log_lines.append(f"Using card database: {carddb}")
         warning = "\n".join(log_lines)
     return player_log, carddb, warning
@@ -654,6 +680,7 @@ DEFAULT_CARD_NAME_COLORS = {
     **{name: (COLOURLESS_MANA_COLOR,) for name in COLORLESS_LAND_NAMES},
     **{name: colors for name, colors in MULTICOLOUR_LAND_COLORS.items()},
 }
+ARCHIVE_SCHEMA_VERSION = 1
 LAND_NAME_PATTERN = re.compile(
     r"(?<!\w)("
     + "|".join(
@@ -1484,6 +1511,158 @@ def new_match_record(number: int, match_id: str, lines: list[str]) -> dict:
     }
 
 
+def default_archive_db_path() -> Path:
+    return Path("mtga_seen_games.sqlite3")
+
+
+def cleaned_transcript_lines(lines: list[str]) -> list[str]:
+    return remove_redundant_match_winner_lines(
+        combine_adjacent_attack_lines(combine_duplicate_transcript_lines(lines))
+    )
+
+
+def transcript_with_game_header(lines: list[str], number: int, match_id: str) -> list[str]:
+    header = f"===== GAME {number}: MATCH {match_id} ====="
+    if lines and lines[0].startswith("===== GAME ") and f"MATCH {match_id}" in lines[0]:
+        return [header, *lines[1:]]
+    return [header, *lines]
+
+
+def ensure_archive_schema(con) -> None:
+    current_version = con.execute("PRAGMA user_version").fetchone()[0]
+    if current_version > ARCHIVE_SCHEMA_VERSION:
+        raise ValueError(
+            f"Archive database schema version {current_version} is newer than "
+            f"this program supports ({ARCHIVE_SCHEMA_VERSION})."
+        )
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS games (
+            match_id TEXT PRIMARY KEY,
+            archive_index INTEGER UNIQUE,
+            game_number INTEGER NOT NULL,
+            game_type TEXT,
+            has_result INTEGER NOT NULL,
+            line_count INTEGER NOT NULL,
+            transcript TEXT NOT NULL,
+            first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    columns = {row[1] for row in con.execute("PRAGMA table_info(games)")}
+    if "archive_index" not in columns:
+        con.execute("ALTER TABLE games ADD COLUMN archive_index INTEGER")
+        rows = list(con.execute("SELECT match_id FROM games ORDER BY game_number, first_seen_at"))
+        for index, (match_id,) in enumerate(rows, 1):
+            con.execute(
+                "UPDATE games SET archive_index = ? WHERE match_id = ?",
+                (index, match_id),
+            )
+        con.execute("CREATE UNIQUE INDEX IF NOT EXISTS games_archive_index_idx ON games(archive_index)")
+    con.execute(f"PRAGMA user_version = {ARCHIVE_SCHEMA_VERSION}")
+
+
+def archive_seen_games(db_path: Path, matches: list[dict]) -> tuple[int, int]:
+    """Store parsed transcripts by match id and return inserted/updated counts."""
+    db_path = db_path.expanduser()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(db_path)
+    ensure_archive_schema(con)
+    existing = {}
+    if matches:
+        existing = {
+            match_id: archive_index
+            for match_id, archive_index in con.execute(
+                "SELECT match_id, archive_index FROM games WHERE match_id IN (%s)"
+                % ",".join("?" for _ in matches),
+                [match["match_id"] for match in matches],
+            )
+        }
+    next_archive_index = (
+        con.execute("SELECT COALESCE(MAX(archive_index), 0) + 1 FROM games").fetchone()[0]
+    )
+
+    inserted = 0
+    updated = 0
+    for match in matches:
+        if match["match_id"] in existing:
+            archive_index = existing[match["match_id"]]
+        else:
+            archive_index = next_archive_index
+            next_archive_index += 1
+        lines = cleaned_transcript_lines(match["lines"])
+        lines = transcript_with_game_header(lines, archive_index, match["match_id"])
+        game_type = next((line for line in lines if line.startswith("Game type:")), None)
+        transcript = "\n".join(lines)
+        con.execute(
+            """
+            INSERT INTO games (
+                match_id, archive_index, game_number, game_type, has_result, line_count, transcript
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(match_id) DO UPDATE SET
+                archive_index=games.archive_index,
+                game_number=games.archive_index,
+                game_type=excluded.game_type,
+                has_result=excluded.has_result,
+                line_count=excluded.line_count,
+                transcript=excluded.transcript,
+                last_seen_at=CURRENT_TIMESTAMP
+            """,
+            (
+                match["match_id"],
+                archive_index,
+                archive_index,
+                game_type,
+                1 if match.get("has_result") else 0,
+                len(lines),
+                transcript,
+            ),
+        )
+        if match["match_id"] in existing:
+            updated += 1
+        else:
+            inserted += 1
+    con.commit()
+    con.close()
+    return inserted, updated
+
+
+def archived_transcript_matches(db_path: Path) -> list[dict]:
+    """Load archived transcripts in stable archive order for normal output selection."""
+    con = sqlite3.connect(db_path.expanduser())
+    ensure_archive_schema(con)
+    rows = list(
+        con.execute(
+            """
+            SELECT archive_index, match_id, has_result, transcript
+            FROM games
+            ORDER BY archive_index
+            """
+        )
+    )
+    con.close()
+    matches = []
+    for archive_index, match_id, has_result, transcript in rows:
+        matches.append(
+            {
+                "number": archive_index,
+                "match_id": match_id,
+                "lines": transcript.splitlines(),
+                "events": [],
+                "debug_hits": [],
+                "debug_seen_objects": set(),
+                "choice_events": [],
+                "target_events": [],
+                "trigger_events": [],
+                "has_result": bool(has_result),
+                "saw_postgame_payload": False,
+                "postgame_hint": None,
+                "finalized": True,
+            }
+        )
+    return matches
+
+
 def extract_game_plays(
     player_log: Path,
     grp_to_name: dict[int, str],
@@ -1506,6 +1685,7 @@ def extract_game_plays(
     card_metadata: dict[int, dict] | None = None,
     ability_texts: dict[int, str] | None = None,
     color_mode: str = "never",
+    archive_db_path: Path | None = None,
 ) -> None:
     """Extract a readable play transcript from MTGA Player.log."""
     zones = {}
@@ -1553,6 +1733,8 @@ def extract_game_plays(
     current_match_record = None
     transcript_matches = []
     event_index = 0
+    seen_match_ids = set()
+    skipping_duplicate_match = False
     debug_grp_ids = debug_grp_ids or set()
 
     debug_counts = Counter()
@@ -1675,9 +1857,12 @@ def extract_game_plays(
         """Initialize transcript and parser state for a new Arena match id."""
         nonlocal current_match, current_match_number
         nonlocal current_match_lines, current_match_record
+        nonlocal skipping_duplicate_match
 
         finalize_current_match()
         current_match = match_id
+        skipping_duplicate_match = False
+        seen_match_ids.add(match_id)
         current_match_number += 1
         current_match_lines = []
         current_match_record = new_match_record(
@@ -3509,7 +3694,17 @@ def extract_game_plays(
 
                         match_id = gsm.get("gameInfo", {}).get("matchID")
                         if match_id and match_id != current_match:
-                            start_match(match_id, gsm)
+                            if match_id in seen_match_ids:
+                                finalize_current_match()
+                                current_match = match_id
+                                current_match_lines = None
+                                current_match_record = None
+                                skipping_duplicate_match = True
+                            else:
+                                start_match(match_id, gsm)
+
+                        if skipping_duplicate_match:
+                            continue
 
                         game_state_id = gsm.get("gameStateId")
                         if (
@@ -3572,6 +3767,14 @@ def extract_game_plays(
             sample = json.dumps(debug_samples[(types, category)], sort_keys=True)
             print(f"{count:5d} {type_text}{cat_text} sample={sample}", file=sys.stderr)
 
+    if archive_db_path:
+        inserted, updated = archive_seen_games(archive_db_path, transcript_matches)
+        print(
+            f"Archived {inserted} new and {updated} existing game(s) to {archive_db_path.expanduser()}",
+            file=sys.stderr,
+        )
+        transcript_matches = archived_transcript_matches(archive_db_path)
+
     selected_matches, selection_warning = select_transcript_matches(
         transcript_matches,
         nth_from_start=nth_from_start,
@@ -3589,9 +3792,7 @@ def extract_game_plays(
             print()
             print()
         first = False
-        lines = remove_redundant_match_winner_lines(
-            combine_adjacent_attack_lines(combine_duplicate_transcript_lines(match["lines"]))
-        )
+        lines = cleaned_transcript_lines(match["lines"])
         print(
             "\n".join(
                 colorize_transcript_line(
@@ -3893,6 +4094,23 @@ No pip install step is required; this script only uses Python's standard library
         default="never",
         help="colour transcript structure and clearly attributed Me/Opponent lines; default: never",
     )
+    parser.add_argument(
+        "--archive-db",
+        nargs="?",
+        const=default_archive_db_path(),
+        default=default_archive_db_path(),
+        type=Path,
+        metavar="PATH",
+        help=(
+            "save parsed games to a SQLite archive keyed by match id; "
+            "default path when no PATH is given: ./mtga_seen_games.sqlite3"
+        ),
+    )
+    parser.add_argument(
+        "--no-archive-db",
+        action="store_true",
+        help="read and print directly from the available logs without updating the archive",
+    )
     args = parser.parse_args()
 
     try:
@@ -3921,6 +4139,8 @@ No pip install step is required; this script only uses Python's standard library
             parser.error("--live cannot be combined with game selection options")
         if args.progress:
             parser.error("--live cannot be combined with --progress")
+    if args.no_archive_db:
+        args.archive_db = None
 
     grp_to_name = load_grp_id_to_name(carddb)
     card_metadata = load_grp_id_to_metadata(carddb)
@@ -3966,6 +4186,7 @@ No pip install step is required; this script only uses Python's standard library
         card_metadata=card_metadata,
         ability_texts=ability_texts,
         color_mode=args.colour,
+        archive_db_path=args.archive_db,
     )
 
 

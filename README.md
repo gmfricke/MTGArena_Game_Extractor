@@ -91,7 +91,7 @@ Usually you can just run:
 python3 mtga_extract_games.py --last 1 --no-resolves
 ```
 
-The program will look in the normal macOS locations for `Player.log` and the newest `Raw_CardDatabase_*.mtga` file. If it finds `Player-prev.log` next to `Player.log`, it reads that first so rotated Arena logs are included too. If it cannot find the needed paths, it will tell you what paths to set.
+The program will look in the normal macOS locations for `Player.log` and the newest `Raw_CardDatabase_*.mtga` file. It reads macOS `UTC_Log` archives first when they are available, then `Player-prev.log`, then `Player.log`, and de-duplicates overlapping games by match ID. Parsed games are saved to `./mtga_seen_games.sqlite3` by default, and normal transcript output is selected from that database. If it cannot find the needed paths, it will tell you what paths to set.
 
 You can also set paths yourself on macOS:
 
@@ -192,10 +192,28 @@ Use this for the first three games in the log:
 python3 mtga_extract_games.py --first 3 --no-resolves
 ```
 
-Use this for every game in `Player.log` and `Player-prev.log`:
+Use this for every game in the available Arena logs:
 
 ```bash
 python3 mtga_extract_games.py --all --no-resolves
+```
+
+By default, parsed games are saved before output is printed:
+
+```bash
+python3 mtga_extract_games.py --all --no-resolves
+```
+
+The default archive is `./mtga_seen_games.sqlite3` in the current directory. You can choose a different path:
+
+```bash
+python3 mtga_extract_games.py --all --no-resolves --archive-db arena_games.sqlite3
+```
+
+For one-off raw-log debugging without updating or reading from the archive:
+
+```bash
+python3 mtga_extract_games.py --all --no-resolves --no-archive-db
 ```
 
 Use this to add terminal colours:
@@ -216,7 +234,7 @@ The most useful options are:
 
 - `--last 1`: show the most recent game
 - `--last 3`: show the last three games
-- `--all`: show every game in the current and previous log files
+- `--all`: show every game in the available Arena logs
 - `--first 3`: show the first three games
 - `--nth-from-start 4`: show only game 4 from the log
 - `--nth-from-end 2`: show the next-to-last game
@@ -230,6 +248,9 @@ The most useful options are:
 - `--colour auto`: add ANSI colour escapes only when stdout is a terminal
 - `--colour always`: always add ANSI colour escapes
 - `--color`: older/American spelling alias for `--colour`
+- `--archive-db`: use the default archive path, `./mtga_seen_games.sqlite3`
+- `--archive-db PATH`: save parsed games to a SQLite archive at `PATH`
+- `--no-archive-db`: read and print directly from the available logs without updating the archive
 
 `--select 4` still works as an older name for `--nth-from-start 4`.
 
