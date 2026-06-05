@@ -533,6 +533,33 @@ TRANSCRIPT_COLORS = {
     "result_opponent": "\033[1;31m",
     "state_detail": "\033[2m",
 }
+LAND_COLORS = {
+    "Plains": "\033[1;97m",
+    "Island": "\033[1;34m",
+    "Swamp": "\033[1;90m",
+    "Mountain": "\033[1;31m",
+    "Forest": "\033[1;32m",
+    "Wastes": "\033[1;37m",
+}
+COLORLESS_LAND_NAMES = {
+    "Cavern of Souls",
+    "Field of Ruin",
+    "Mutavault",
+    "Nykthos, Shrine to Nyx",
+    "Reliquary Tower",
+}
+LAND_NAME_PATTERN = re.compile(
+    r"\b("
+    + "|".join(
+        re.escape(name)
+        for name in sorted(
+            [*LAND_COLORS, *COLORLESS_LAND_NAMES],
+            key=len,
+            reverse=True,
+        )
+    )
+    + r")\b"
+)
 
 
 def should_color_output(color_mode: str, stdout_is_tty: bool) -> bool:
@@ -601,14 +628,34 @@ def transcript_line_style(line: str) -> str | None:
     return None
 
 
+def color_for_land_name(name: str) -> str:
+    """Return the ANSI colour for a known land name."""
+    return LAND_COLORS.get(name) or "\033[1;37m"
+
+
+def colorize_land_names(line: str, color_enabled: bool, outer_color: str | None = None) -> str:
+    """Apply mana-style colours to known land names in a transcript line."""
+    if not color_enabled:
+        return line
+
+    def replace(match):
+        name = match.group(0)
+        if outer_color:
+            return f"{ANSI_RESET}{color_for_land_name(name)}{name}{ANSI_RESET}{outer_color}"
+        return f"{color_for_land_name(name)}{name}{ANSI_RESET}"
+
+    return LAND_NAME_PATTERN.sub(replace, line)
+
+
 def colorize_transcript_line(line: str, color_enabled: bool) -> str:
     """Apply ANSI color to transcript syntax when requested."""
     if not color_enabled:
         return line
     color = TRANSCRIPT_COLORS.get(transcript_line_style(line))
+    line = colorize_land_names(line, color_enabled, color)
     if not color:
         return line
-    return f"{color}{line}{ANSI_RESET}"
+    return f"{color}{line.removeprefix(ANSI_RESET)}{ANSI_RESET}"
 
 
 def possessive_pronoun(label: str) -> str:

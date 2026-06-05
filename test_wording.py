@@ -75,6 +75,7 @@ from mtga_extract_games import (
     state_player_label,
     state_zone_label,
     subject_pronoun,
+    colorize_land_names,
     should_color_output,
     transcript_line_perspective,
     transcript_line_style,
@@ -115,6 +116,12 @@ class WordingTests(unittest.TestCase):
         self.assertTrue(should_color_output("auto", True))
         self.assertTrue(should_color_output("always", False))
         self.assertIn("\033[36m", colorize_transcript_line("I cast Giada", True))
+        self.assertIn("\033[1;97mPlains", colorize_land_names("I play Plains", True))
+        self.assertIn("\033[1;90mSwamp", colorize_land_names("Opponent plays Swamp", True))
+        self.assertIn(
+            "\033[1;37mNykthos, Shrine to Nyx",
+            colorize_land_names("I play Nykthos, Shrine to Nyx", True),
+        )
         self.assertEqual(colorize_transcript_line("I cast Giada", False), "I cast Giada")
 
     def test_turn_state_uses_possessive_labels(self):
