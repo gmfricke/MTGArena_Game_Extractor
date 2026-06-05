@@ -91,7 +91,7 @@ class WordingTests(unittest.TestCase):
 
     def test_transcript_line_color_helpers(self):
         self.assertEqual(transcript_line_perspective("I cast Giada, Font of Hope"), "me")
-        self.assertEqual(transcript_line_perspective("My side:"), "me")
+        self.assertEqual(transcript_line_perspective("My board:"), "me")
         self.assertIsNone(transcript_line_perspective("  Hand: Plains"))
         self.assertEqual(
             transcript_line_perspective("Opponent casts Arcane Signet"),
@@ -121,8 +121,9 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(state_zone_label("Me", "board"), "My board")
         self.assertEqual(state_zone_label("Opponent", "hand"), "Opponent's hand")
         self.assertEqual(state_zone_label("Player 1", "library"), "Player 1's library")
-        self.assertEqual(state_player_heading("Me"), "My side")
-        self.assertEqual(state_player_heading("Opponent"), "Opponent")
+        self.assertEqual(state_player_heading("Me"), "My board")
+        self.assertEqual(state_player_heading("Opponent"), "Opponent's board")
+        self.assertEqual(state_player_heading("Player 1"), "Player 1's board")
 
     def test_adjacent_duplicate_transcript_lines_are_combined(self):
         lines = [

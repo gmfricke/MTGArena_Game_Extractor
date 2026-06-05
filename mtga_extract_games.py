@@ -418,7 +418,11 @@ def state_zone_label(label: str, zone_name: str) -> str:
 def state_player_heading(label: str) -> str:
     """Return a turn-state block heading when grouping zones by player."""
     if label == "Me":
-        return "My side"
+        return "My board"
+    if label == "Opponent":
+        return "Opponent's board"
+    if label:
+        return f"{label}'s board"
     return label
 
 
@@ -548,7 +552,7 @@ def transcript_line_perspective(line: str) -> str | None:
         return "me"
     if line.startswith("=== Turn ") and line.endswith(": Opponent ==="):
         return "opponent"
-    if line.startswith(("I ", "My ", "My side:", "Winner: Me", "Match winner: Me")):
+    if line.startswith(("I ", "My ", "My board:", "Winner: Me", "Match winner: Me")):
         return "me"
     if line.startswith(
         (
@@ -575,9 +579,9 @@ def transcript_line_style(line: str) -> str | None:
         return "me_header"
     if line.startswith("=== Turn ") and line.endswith(": Opponent ==="):
         return "opponent_header"
-    if line == "My side:":
+    if line == "My board:":
         return "me_header"
-    if line == "Opponent:":
+    if line == "Opponent's board:":
         return "opponent_header"
     if line.startswith(("  ", "    ")):
         return "state_detail"
@@ -2116,7 +2120,7 @@ def extract_game_plays(
             parts.append(f"Untapped: {compact_names(row['untapped'])}")
         if row["tapped"]:
             parts.append(f"Tapped: {compact_names(row['tapped'])}")
-        return f"    {label}: {'; '.join(parts) if parts else '(empty)'}"
+        return f"  {label}: {'; '.join(parts) if parts else '(empty)'}"
 
     def zone_names(zone_type, seat=None):
         """Collect card names from zones such as hand, graveyard, exile."""
@@ -2182,7 +2186,6 @@ def extract_game_plays(
     def emit_player_state(seat, label):
         """Print all visible zones for one player in a compact block."""
         emit(f"{state_player_heading(label)}:")
-        emit("  Board:")
         emit_board_rows(seat)
         emit(f"  Hand: {compact_names(hand_names(seat))}")
         emit(f"  {phrase_library_count('Library', library_count(seat))}")
