@@ -148,6 +148,39 @@ def load_grp_id_to_metadata(carddb_path: Path) -> dict[int, dict]:
     return metadata
 
 
+def load_ability_texts(carddb_path: Path) -> dict[int, str]:
+    """Load Arena ability id -> English rules text from the card database."""
+    con = sqlite3.connect(carddb_path)
+    cur = con.cursor()
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = {row[0] for row in cur.fetchall()}
+    if not {"Abilities", "Localizations_enUS"}.issubset(tables):
+        con.close()
+        return {}
+
+    cur.execute("""
+        SELECT a.Id, l.Loc, l.Formatted
+        FROM Abilities a
+        JOIN Localizations_enUS l
+          ON a.TextId = l.LocId
+        WHERE l.Formatted IN (0, 1, 2)
+        ORDER BY
+          a.Id,
+          CASE l.Formatted
+            WHEN 1 THEN 0
+            WHEN 0 THEN 1
+            WHEN 2 THEN 2
+            ELSE 3
+          END
+    """)
+    mapping = {}
+    for ability_id, text, _formatted in cur.fetchall():
+        if text and int(ability_id) not in mapping:
+            mapping[int(ability_id)] = clean_localized_enum_name(text)
+    con.close()
+    return mapping
+
+
 def find_grp_ids_by_card_name(carddb_path: Path, card_name: str) -> dict[int, str]:
     """Find GrpIds whose English card title matches a user supplied name."""
     con = sqlite3.connect(carddb_path)
@@ -421,6 +454,18 @@ def select_transcript_matches(
     if first_games is not None:
         return matches[:first_games], None
     return matches, None
+
+
+def has_live_selection_conflict(args) -> bool:
+    """Return true when --live is combined with a game selector."""
+    return bool(
+        args.all
+        or args.select is not None
+        or args.nth_from_end is not None
+        or args.first is not None
+        or args.last is not None
+        or args.range is not None
+    )
 
 
 def possessive_pronoun(label: str) -> str:
@@ -953,6 +998,7 @@ def extract_game_plays(
     live: bool = False,
     enum_value_names: dict[str, dict[int, str]] | None = None,
     card_metadata: dict[int, dict] | None = None,
+    ability_texts: dict[int, str] | None = None,
 ) -> None:
     """Extract a readable play transcript from MTGA Player.log."""
     zones = {}
@@ -988,6 +1034,7 @@ def extract_game_plays(
     persistent_annotations = {}
     known_targets_by_source = defaultdict(list)
     known_target_names_by_source = defaultdict(list)
+    known_target_ability_ids_by_source = defaultdict(list)
     current_match = None
     current_turn = None
     last_game_state_id = None
@@ -1029,6 +1076,7 @@ def extract_game_plays(
     }
     enum_value_names = enum_value_names or {}
     card_metadata = card_metadata or {}
+    ability_texts = ability_texts or {}
     subtype_names = enum_value_names.get("SubType") or {}
     counter_type_names = enum_value_names.get("CounterType") or {}
     choice_value_names = {
@@ -1360,6 +1408,8 @@ def extract_game_plays(
             # Resolve, and Arena may change the stack object's id in between.
             # Move the pending cast to the new id so it is not lost.
             pending_stack_casts[new_id] = pending_stack_casts.pop(orig_id)
+            if pending_stack_casts[new_id].get("source_id") == orig_id:
+                pending_stack_casts[new_id]["source_id"] = new_id
         if orig_id in object_counters:
             # Counter annotations are tied to instance ids. Carry them across
             # object id changes so board-state grouping remains accurate.
@@ -1379,6 +1429,10 @@ def extract_game_plays(
             known_targets_by_source[new_id].extend(known_targets_by_source.pop(orig_id))
         if orig_id in known_target_names_by_source:
             known_target_names_by_source[new_id].extend(known_target_names_by_source.pop(orig_id))
+        if orig_id in known_target_ability_ids_by_source:
+            known_target_ability_ids_by_source[new_id].extend(
+                known_target_ability_ids_by_source.pop(orig_id)
+            )
         for source_id, target_ids in list(known_targets_by_source.items()):
             known_targets_by_source[source_id] = [
                 new_id if target_id == orig_id else target_id for target_id in target_ids
@@ -1472,10 +1526,54 @@ def extract_game_plays(
                         names.append(name)
         return names
 
+    def target_spec_ability_ids_for_source(source_id):
+        """Return ability ids Arena attached to target specs for a source."""
+        ability_ids = []
+        for ability_id in known_target_ability_ids_by_source.get(source_id, []):
+            if ability_id not in ability_ids:
+                ability_ids.append(ability_id)
+        for ann in persistent_annotations.values():
+            if "AnnotationType_TargetSpec" not in set(ann.get("type") or []):
+                continue
+            if ann.get("affectorId") != source_id:
+                continue
+            ability_id = detail_dict(ann.get("details")).get("abilityGrpId")
+            if isinstance(ability_id, int) and ability_id not in ability_ids:
+                ability_ids.append(ability_id)
+        return ability_ids
+
+    def ability_choice_text_for_source(source_id):
+        """Return chosen modal ability text when TargetSpec exposes one."""
+        obj = objects.get(source_id, {})
+        source_ability_ids = [
+            ability.get("grpId")
+            for ability in obj.get("uniqueAbilities") or []
+            if ability.get("grpId") is not None
+        ]
+        source_texts = [ability_texts.get(ability_id) for ability_id in source_ability_ids]
+        source_metadata = metadata_for_object(obj) or {}
+        source_texts.extend(source_metadata.get("ability_texts") or [])
+        has_modal_parent = any(
+            text and "choose one" in text.casefold()
+            for text in source_texts
+        )
+        if not has_modal_parent:
+            return None
+
+        for ability_id in target_spec_ability_ids_for_source(source_id):
+            text = ability_texts.get(ability_id)
+            if text and "choose one" not in text.casefold():
+                return text
+        return None
+
     def cast_text_with_targets(source_id, text):
         """Append target wording to a cast line when Arena gives targets."""
         source_name = text.split(" from command zone", 1)[0].split(";", 1)[0]
-        return append_target_phrase(text, target_names_for_source(source_id, source_name))
+        text = append_target_phrase(text, target_names_for_source(source_id, source_name))
+        choice_text = ability_choice_text_for_source(source_id)
+        if choice_text:
+            text = f"{text} ({choice_text})"
+        return text
 
     def source_label(instance_id):
         """Return a source card name only when it is more useful than a raw id."""
@@ -2632,6 +2730,12 @@ def extract_game_plays(
             if "AnnotationType_TargetSpec" in set(ann.get("type") or []):
                 source_id = ann.get("affectorId")
                 if source_id is not None:
+                    ability_id = detail_dict(ann.get("details")).get("abilityGrpId")
+                    if (
+                        isinstance(ability_id, int)
+                        and ability_id not in known_target_ability_ids_by_source[source_id]
+                    ):
+                        known_target_ability_ids_by_source[source_id].append(ability_id)
                     # TargetSpec can disappear before the later Resolve
                     # annotation. Remember the selected ids by stack object so
                     # delayed cast lines can still report them.
@@ -2945,6 +3049,7 @@ def extract_game_plays(
                             persistent_annotations.clear()
                             known_targets_by_source.clear()
                             known_target_names_by_source.clear()
+                            known_target_ability_ids_by_source.clear()
                             emit(f"===== GAME {current_match_number}: MATCH {current_match} =====")
 
                         game_state_id = gsm.get("gameStateId")
@@ -3371,24 +3476,14 @@ No pip install step is required; this script only uses Python's standard library
         if range_start > range_end:
             parser.error("--range X Y requires X to be less than or equal to Y")
     if args.live:
-        has_selection = any(
-            value is not None
-            for value in (
-                args.select,
-                args.nth_from_end,
-                args.first,
-                args.last,
-                args.range,
-                args.all,
-	            )
-	        )
-        if has_selection:
+        if has_live_selection_conflict(args):
             parser.error("--live cannot be combined with game selection options")
         if args.progress:
             parser.error("--live cannot be combined with --progress")
 
     grp_to_name = load_grp_id_to_name(carddb)
     card_metadata = load_grp_id_to_metadata(carddb)
+    ability_texts = load_ability_texts(carddb)
     enum_value_names = {
         # Player choice payloads for creature types use the same numeric values
         # as the card database SubType enum, which keeps this from becoming a
@@ -3428,6 +3523,7 @@ No pip install step is required; this script only uses Python's standard library
         live=args.live,
         enum_value_names=enum_value_names,
         card_metadata=card_metadata,
+        ability_texts=ability_texts,
     )
 
 

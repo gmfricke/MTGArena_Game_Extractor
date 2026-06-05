@@ -1,6 +1,7 @@
 import unittest
 import sqlite3
 import tempfile
+from argparse import Namespace
 from unittest.mock import patch
 from collections import Counter
 from pathlib import Path
@@ -23,6 +24,7 @@ from mtga_extract_games import (
     copied_object_label,
     death_label_or_none,
     is_hidden_arena_object,
+    load_ability_texts,
     load_enum_value_names,
     load_grp_id_to_metadata,
     life_change_group_source,
@@ -52,6 +54,7 @@ from mtga_extract_games import (
     find_target_like_paths,
     format_target_phrase,
     grouped_name_phrase,
+    has_live_selection_conflict,
     modifier_summary_suffix,
     resolve_stack_name,
     resolve_input_paths,
@@ -135,6 +138,24 @@ class WordingTests(unittest.TestCase):
             [match["number"] for match in select_transcript_matches(matches, game_range=(2, 4))[0]],
             [2, 3, 4],
         )
+
+    def test_live_selection_conflict_ignores_default_all_false(self):
+        args = Namespace(
+            all=False,
+            select=None,
+            nth_from_end=None,
+            first=None,
+            last=None,
+            range=None,
+        )
+        self.assertFalse(has_live_selection_conflict(args))
+
+        args.last = 1
+        self.assertTrue(has_live_selection_conflict(args))
+
+        args.last = None
+        args.all = True
+        self.assertTrue(has_live_selection_conflict(args))
 
     def test_path_resolution_uses_explicit_paths(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -408,6 +429,35 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(metadata[100]["type_numbers"], {5})
         self.assertEqual(metadata[200]["play_mechanics"], ["flashback"])
         self.assertEqual(metadata[300]["play_mechanics"], ["escape"])
+
+    def test_ability_text_loader_reads_modal_child_text(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            carddb = Path(tmpdir) / "carddb.mtga"
+            con = sqlite3.connect(carddb)
+            cur = con.cursor()
+            cur.execute("CREATE TABLE Abilities(Id INT, TextId INT)")
+            cur.execute("CREATE TABLE Localizations_enUS(LocId INT, Formatted INT, Loc TEXT)")
+            cur.executemany(
+                "INSERT INTO Abilities VALUES (?, ?)",
+                [(22657, 10), (101796, 11)],
+            )
+            cur.executemany(
+                "INSERT INTO Localizations_enUS VALUES (?, ?, ?)",
+                [
+                    (10, 1, "Target creature gains indestructible until end of turn."),
+                    (11, 1, "Choose one<nobr> —</nobr> Target creature gains indestructible."),
+                ],
+            )
+            con.commit()
+            con.close()
+
+            self.assertEqual(
+                load_ability_texts(carddb),
+                {
+                    22657: "Target creature gains indestructible until end of turn.",
+                    101796: "Choose one — Target creature gains indestructible.",
+                },
+            )
 
     def test_available_resource_helpers(self):
         land_meta = {"type_numbers": {5}}
