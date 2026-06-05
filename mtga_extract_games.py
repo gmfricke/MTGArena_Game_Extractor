@@ -468,6 +468,54 @@ def has_live_selection_conflict(args) -> bool:
     )
 
 
+def clean_arena_enum(value: str | None, prefix: str) -> str | None:
+    """Convert Arena enum strings such as GameVariant_Brawl to Brawl."""
+    if not value:
+        return None
+    return str(value).removeprefix(prefix).replace("_", " ")
+
+
+def format_game_type(game_info: dict | None, players: list[dict] | None = None) -> str | None:
+    """Return a concise game-type line from Arena gameInfo fields."""
+    if not game_info:
+        return None
+
+    variant = clean_arena_enum(game_info.get("variant"), "GameVariant_")
+    super_format = clean_arena_enum(game_info.get("superFormat"), "SuperFormat_")
+    game_type = clean_arena_enum(game_info.get("type"), "GameType_")
+
+    if variant == "Normal":
+        label = f"{super_format} {game_type}".strip()
+    else:
+        label = " ".join(part for part in (super_format, variant) if part)
+    if not label:
+        label = game_type
+    if not label:
+        return None
+
+    starting_life_totals = sorted(
+        {
+            player.get("startingLifeTotal")
+            for player in players or []
+            if player.get("startingLifeTotal") is not None
+        }
+    )
+    if len(starting_life_totals) == 1:
+        label = f"{label} ({starting_life_totals[0]} starting life)"
+    return f"Game type: {label}"
+
+
+def game_has_commanders(game_info: dict | None) -> bool:
+    """Return true when Arena reports commander deck constraints or variants."""
+    if not game_info:
+        return False
+    deck_constraints = game_info.get("deckConstraintInfo") or {}
+    if deck_constraints.get("minCommanderSize") or deck_constraints.get("maxCommanderSize"):
+        return True
+    variant = clean_arena_enum(game_info.get("variant"), "GameVariant_") or ""
+    return "Brawl" in variant or "Commander" in variant
+
+
 def possessive_pronoun(label: str) -> str:
     """Return a short possessive phrase for a player label."""
     if label == "Me":
@@ -1038,6 +1086,7 @@ def extract_game_plays(
     current_match = None
     current_turn = None
     last_game_state_id = None
+    current_game_has_commanders = False
     known_local_seat = None
     current_match_number = 0
     current_match_lines = None
@@ -1943,7 +1992,8 @@ def extract_game_plays(
         emit_board_rows(seat)
         emit(f"  Hand: {compact_names(hand_names(seat))}")
         emit(f"  {phrase_library_count('Library', library_count(seat))}")
-        emit(f"  Command: {compact_names(command_zone_names(seat))}")
+        if current_game_has_commanders:
+            emit(f"  Command: {compact_names(command_zone_names(seat))}")
         emit(f"  Graveyard: {compact_names(zone_names('ZoneType_Graveyard', seat))}")
         emit(f"  Exile: {compact_names(zone_names('ZoneType_Exile', seat))}")
         for line in available_resource_lines(available_resources_for_seat(seat)):
@@ -3022,6 +3072,7 @@ def extract_game_plays(
                             event_index = 0
                             current_turn = None
                             last_game_state_id = None
+                            current_game_has_commanders = game_has_commanders(gsm.get("gameInfo"))
                             known_local_seat = None
                             zones.clear()
                             objects.clear()
@@ -3051,6 +3102,12 @@ def extract_game_plays(
                             known_target_names_by_source.clear()
                             known_target_ability_ids_by_source.clear()
                             emit(f"===== GAME {current_match_number}: MATCH {current_match} =====")
+                            game_type_line = format_game_type(
+                                gsm.get("gameInfo"),
+                                gsm.get("players"),
+                            )
+                            if game_type_line:
+                                emit(game_type_line)
 
                         game_state_id = gsm.get("gameStateId")
                         if (

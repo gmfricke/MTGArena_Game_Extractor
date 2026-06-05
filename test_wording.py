@@ -52,7 +52,9 @@ from mtga_extract_games import (
     phrase_result,
     phrase_zone_change,
     find_target_like_paths,
+    format_game_type,
     format_target_phrase,
+    game_has_commanders,
     grouped_name_phrase,
     has_live_selection_conflict,
     modifier_summary_suffix,
@@ -156,6 +158,47 @@ class WordingTests(unittest.TestCase):
         args.last = None
         args.all = True
         self.assertTrue(has_live_selection_conflict(args))
+
+    def test_game_type_formatting(self):
+        brawl_info = {
+            "type": "GameType_Duel",
+            "variant": "GameVariant_Brawl",
+            "superFormat": "SuperFormat_Constructed",
+        }
+        normal_info = {
+            "type": "GameType_Duel",
+            "variant": "GameVariant_Normal",
+            "superFormat": "SuperFormat_Constructed",
+        }
+        brawl_players = [{"startingLifeTotal": 25}, {"startingLifeTotal": 25}]
+        normal_players = [{"startingLifeTotal": 20}, {"startingLifeTotal": 20}]
+
+        self.assertEqual(
+            format_game_type(brawl_info, brawl_players),
+            "Game type: Constructed Brawl (25 starting life)",
+        )
+        self.assertEqual(
+            format_game_type(normal_info, normal_players),
+            "Game type: Constructed Duel (20 starting life)",
+        )
+        self.assertIsNone(format_game_type(None))
+        self.assertTrue(
+            game_has_commanders(
+                {
+                    "variant": "GameVariant_Normal",
+                    "deckConstraintInfo": {"minCommanderSize": 1, "maxCommanderSize": 2},
+                }
+            )
+        )
+        self.assertTrue(game_has_commanders({"variant": "GameVariant_Brawl"}))
+        self.assertFalse(
+            game_has_commanders(
+                {
+                    "variant": "GameVariant_Normal",
+                    "deckConstraintInfo": {"minDeckSize": 60, "maxSideboardSize": 15},
+                }
+            )
+        )
 
     def test_path_resolution_uses_explicit_paths(self):
         with tempfile.TemporaryDirectory() as tmpdir:
