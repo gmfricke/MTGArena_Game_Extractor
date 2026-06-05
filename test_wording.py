@@ -19,6 +19,7 @@ from mtga_extract_games import (
     card_is_nonland_permanent,
     colorize_transcript_line,
     clean_localized_enum_name,
+    combine_adjacent_attack_lines,
     combine_duplicate_transcript_lines,
     compact_counted_name,
     counter_summary_suffix,
@@ -143,6 +144,33 @@ class WordingTests(unittest.TestCase):
                 "2x Opponent discards Island",
                 "Winner: Opponent",
                 "Winner: Opponent",
+            ],
+        )
+
+    def test_adjacent_same_target_attacks_are_combined(self):
+        lines = [
+            "I play Temple of Enlightenment",
+            "I attack Opponent with Healer's Hawk",
+            "I attack Opponent with Giada, Font of Hope",
+            "I attack Opponent with Inspiring Overseer",
+            "I attack Opponent with Empyrean Eagle",
+            "I attack Opponent with Youthful Valkyrie",
+            "Opponent loses 15 life (-4)",
+            "Opponent attacks me with Fanatical Firebrand",
+            "Opponent attacks me with Crusader of Odric",
+            "Opponent attacks Invasion of Zendikar with Frenzied Goblin",
+        ]
+        self.assertEqual(
+            combine_adjacent_attack_lines(lines),
+            [
+                "I play Temple of Enlightenment",
+                (
+                    "I attack Opponent with Healer's Hawk, Giada, Font of Hope, "
+                    "Inspiring Overseer, Empyrean Eagle, and Youthful Valkyrie"
+                ),
+                "Opponent loses 15 life (-4)",
+                "Opponent attacks me with Fanatical Firebrand and Crusader of Odric",
+                "Opponent attacks Invasion of Zendikar with Frenzied Goblin",
             ],
         )
 

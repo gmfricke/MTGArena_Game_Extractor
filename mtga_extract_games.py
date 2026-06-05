@@ -844,6 +844,62 @@ def combine_duplicate_transcript_lines(lines: list[str]) -> list[str]:
     return combined
 
 
+def joined_english_list(items: list[str]) -> str:
+    """Join names as A, B, and C for transcript summaries."""
+    if len(items) <= 1:
+        return items[0] if items else ""
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    return f"{', '.join(items[:-1])}, and {items[-1]}"
+
+
+def parse_attack_line(line: str) -> tuple[str, str, str] | None:
+    """Parse simple attack declaration transcript lines."""
+    match = re.fullmatch(r"(I|Opponent) attacks? (.+) with (.+)", line)
+    if not match:
+        return None
+    actor, target, attacker = match.groups()
+    return actor, target, attacker
+
+
+def grouped_attack_line(actor: str, target: str, attackers: list[str]) -> str:
+    """Render adjacent same-target attacks as one readable line."""
+    verb = "attack" if actor == "I" else "attacks"
+    return f"{actor} {verb} {target} with {joined_english_list(attackers)}"
+
+
+def combine_adjacent_attack_lines(lines: list[str]) -> list[str]:
+    """Collapse adjacent same-player, same-target attack declarations."""
+    combined = []
+    index = 0
+    while index < len(lines):
+        parsed = parse_attack_line(lines[index])
+        if not parsed:
+            combined.append(lines[index])
+            index += 1
+            continue
+
+        actor, target, attacker = parsed
+        attackers = [attacker]
+        cursor = index + 1
+        while cursor < len(lines):
+            next_parsed = parse_attack_line(lines[cursor])
+            if not next_parsed:
+                break
+            next_actor, next_target, next_attacker = next_parsed
+            if next_actor != actor or next_target != target:
+                break
+            attackers.append(next_attacker)
+            cursor += 1
+
+        if len(attackers) == 1:
+            combined.append(lines[index])
+        else:
+            combined.append(grouped_attack_line(actor, target, attackers))
+        index = cursor
+    return combined
+
+
 def modifier_summary_suffix(parts: list[str]) -> str:
     """Render permanent modifiers in one parenthetical board-state suffix."""
     return f" ({'; '.join(parts)})" if parts else ""
@@ -3322,7 +3378,7 @@ def extract_game_plays(
             print()
             print()
         first = False
-        lines = combine_duplicate_transcript_lines(match["lines"])
+        lines = combine_adjacent_attack_lines(combine_duplicate_transcript_lines(match["lines"]))
         print("\n".join(colorize_transcript_line(line, color_enabled) for line in lines))
 
     if debug_grp_ids:
