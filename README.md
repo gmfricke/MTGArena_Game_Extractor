@@ -117,6 +117,8 @@ Show the current game from its start and then keep watching while Arena is runni
 python3 mtga_extract_games.py --live --no-resolves
 ```
 
+Live mode records each completed game to the archive as soon as Arena writes a final game result. If you stop live mode before the current game finishes, it prints a warning that the unfinished game was not recorded in the database.
+
 Show the built-in help page:
 
 ```bash
@@ -191,7 +193,7 @@ The default archive is `./mtga_seen_games.sqlite3` in the current directory. You
 python3 mtga_extract_games.py --all --no-resolves --archive-db arena_games.sqlite3
 ```
 
-The archive keeps stable game identity and ordering separately from transcript text. The `games` table is keyed by Arena match ID, `transcripts` stores generated plain-text output, and `log_sources` records the log files seen during refreshes. This keeps the database usable if future versions add more transcript formats or metadata.
+The archive keeps stable match identity, game ordering, and transcript text separately. The `matches` table is keyed by Arena match ID, `games` stores one row per game within a match, `transcripts` stores generated plain-text output, and `log_sources` records the log files seen during refreshes. This keeps the database usable for best-of-one and best-of-three matches, and leaves room for future transcript formats or metadata.
 
 For one-off raw-log debugging without updating or reading from the archive:
 
@@ -222,7 +224,7 @@ The most useful options are:
 - `--nth-from-start 4`: show only game 4 from the log
 - `--nth-from-end 2`: show the next-to-last game
 - `--range 3 5`: show games 3 through 5
-- `--live`: show the current game from its start, then print new transcript lines as Arena writes them
+- `--live`: show the current game from its start, print new transcript lines as Arena writes them, and archive completed games
 - `--no-resolves`: hide routine "resolves" lines
 - `--no-turn-state`: hide board and hand snapshots
 - `--no-phases`: hide phase and step headings

@@ -685,7 +685,7 @@ DEFAULT_CARD_NAME_COLORS = {
     **{name: (COLOURLESS_MANA_COLOR,) for name in COLORLESS_LAND_NAMES},
     **{name: colors for name, colors in MULTICOLOUR_LAND_COLORS.items()},
 }
-ARCHIVE_SCHEMA_VERSION = 1
+ARCHIVE_SCHEMA_VERSION = 2
 LAND_NAME_PATTERN = re.compile(
     r"(?<!\w)("
     + "|".join(
@@ -1730,7 +1730,8 @@ def is_low_fidelity_update_without_turn(gsm: dict) -> bool:
 def new_match_record(number: int, match_id: str, lines: list[str]) -> dict:
     """Build the per-match transcript/debug container."""
     return {
-        "number": number, "match_id": match_id, "lines": lines,
+        "number": number, "match_id": match_id, "match_number": number,
+        "game_index": 1, "lines": lines,
         "events": [], "debug_hits": [],
         "debug_seen_objects": set(),
         "choice_events": [], "target_events": [], "trigger_events": [],
@@ -1770,19 +1771,20 @@ def ensure_archive_schema(con) -> None:
             f"this program supports ({ARCHIVE_SCHEMA_VERSION})."
         )
 
-    old_games = []
+    legacy_games = []
     existing_tables = {
         row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
     if "games" in existing_tables:
         columns = {row[1] for row in con.execute("PRAGMA table_info(games)")}
         if "transcript" in columns:
-            old_games = list(
+            legacy_games = list(
                 con.execute(
                     """
                     SELECT
                         match_id,
                         COALESCE(archive_index, game_number),
+                        1,
                         game_type,
                         has_result,
                         line_count,
@@ -1795,16 +1797,51 @@ def ensure_archive_schema(con) -> None:
                 )
             )
             con.execute("ALTER TABLE games RENAME TO games_legacy_v0")
+        elif current_version < 2 and "match_id" in columns and "archive_index" in columns:
+            legacy_games = list(
+                con.execute(
+                    """
+                    SELECT
+                        g.match_id,
+                        g.archive_index,
+                        1,
+                        g.game_type,
+                        g.has_result,
+                        t.line_count,
+                        t.content,
+                        g.first_seen_at,
+                        g.last_seen_at
+                    FROM games g
+                    JOIN transcripts t ON t.game_id = g.id AND t.format = 'plain_text'
+                    ORDER BY g.archive_index, g.first_seen_at
+                    """
+                )
+            )
+            con.execute("ALTER TABLE games RENAME TO games_legacy_v1")
+            if "transcripts" in existing_tables:
+                con.execute("ALTER TABLE transcripts RENAME TO transcripts_legacy_v1")
 
     con.execute("""
-        CREATE TABLE IF NOT EXISTS games (
+        CREATE TABLE IF NOT EXISTS matches (
             id INTEGER PRIMARY KEY,
             match_id TEXT NOT NULL UNIQUE,
             archive_index INTEGER NOT NULL UNIQUE,
+            first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS games (
+            id INTEGER PRIMARY KEY,
+            match_row_id INTEGER NOT NULL,
+            game_index INTEGER NOT NULL,
+            game_archive_index INTEGER NOT NULL UNIQUE,
             game_type TEXT,
             has_result INTEGER NOT NULL,
             first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(match_row_id, game_index),
+            FOREIGN KEY(match_row_id) REFERENCES matches(id) ON DELETE CASCADE
         )
     """)
     con.execute("""
@@ -1831,29 +1868,57 @@ def ensure_archive_schema(con) -> None:
             last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    con.execute("CREATE INDEX IF NOT EXISTS games_archive_index_idx ON games(archive_index)")
-    con.execute("CREATE INDEX IF NOT EXISTS transcripts_game_id_idx ON transcripts(game_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS matches_v2_archive_index_idx ON matches(archive_index)")
+    con.execute("CREATE INDEX IF NOT EXISTS games_v2_match_row_id_idx ON games(match_row_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS games_v2_archive_index_idx ON games(game_archive_index)")
+    con.execute("CREATE INDEX IF NOT EXISTS transcripts_v2_game_id_idx ON transcripts(game_id)")
 
     for (
         match_id,
         archive_index,
+        game_index,
         game_type,
         has_result,
         line_count,
         transcript,
         first_seen_at,
         last_seen_at,
-    ) in old_games:
+    ) in legacy_games:
+        con.execute(
+            """
+            INSERT OR IGNORE INTO matches (
+                match_id, archive_index, first_seen_at, last_seen_at
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (match_id, archive_index, first_seen_at, last_seen_at),
+        )
+        match_row_id = con.execute(
+            "SELECT id FROM matches WHERE match_id = ?",
+            (match_id,),
+        ).fetchone()[0]
         con.execute(
             """
             INSERT OR IGNORE INTO games (
-                match_id, archive_index, game_type, has_result, first_seen_at, last_seen_at
+                match_row_id, game_index, game_archive_index, game_type,
+                has_result, first_seen_at, last_seen_at
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (match_id, archive_index, game_type, has_result, first_seen_at, last_seen_at),
+            (
+                match_row_id,
+                game_index,
+                archive_index,
+                game_type,
+                has_result,
+                first_seen_at,
+                last_seen_at,
+            ),
         )
-        game_id = con.execute("SELECT id FROM games WHERE match_id = ?", (match_id,)).fetchone()[0]
+        game_id = con.execute(
+            "SELECT id FROM games WHERE match_row_id = ? AND game_index = ?",
+            (match_row_id, game_index),
+        ).fetchone()[0]
         con.execute(
             """
             INSERT OR REPLACE INTO transcripts (
@@ -1896,54 +1961,112 @@ def archive_seen_games(
             (str(expanded), stat.st_size, stat.st_mtime),
         )
 
-    existing = {}
-    if matches:
-        existing = {
-            match_id: archive_index
-            for match_id, archive_index in con.execute(
-                "SELECT match_id, archive_index FROM games WHERE match_id IN (%s)"
-                % ",".join("?" for _ in matches),
-                [match["match_id"] for match in matches],
+    records = []
+    game_index_counts = Counter()
+    for match in matches:
+        match_id = match["match_id"]
+        if match.get("game_index") is None:
+            game_index_counts[match_id] += 1
+            game_index = game_index_counts[match_id]
+        else:
+            game_index = int(match["game_index"])
+        records.append((match, game_index))
+
+    match_ids = sorted({match["match_id"] for match, _game_index in records})
+    existing_matches = {}
+    if match_ids:
+        existing_matches = {
+            match_id: (match_row_id, archive_index)
+            for match_row_id, match_id, archive_index in con.execute(
+                "SELECT id, match_id, archive_index FROM matches WHERE match_id IN (%s)"
+                % ",".join("?" for _ in match_ids),
+                match_ids,
             )
         }
-    next_archive_index = (
-        con.execute("SELECT COALESCE(MAX(archive_index), 0) + 1 FROM games").fetchone()[0]
+    existing_games = {}
+    if match_ids:
+        existing_games = {
+            (match_id, game_index): (game_id, game_archive_index)
+            for game_id, match_id, game_index, game_archive_index in con.execute(
+                """
+                SELECT g.id, m.match_id, g.game_index, g.game_archive_index
+                FROM games g
+                JOIN matches m ON m.id = g.match_row_id
+                WHERE m.match_id IN (%s)
+                """
+                % ",".join("?" for _ in match_ids),
+                match_ids,
+            )
+        }
+    next_match_archive_index = (
+        con.execute("SELECT COALESCE(MAX(archive_index), 0) + 1 FROM matches").fetchone()[0]
+    )
+    next_game_archive_index = (
+        con.execute("SELECT COALESCE(MAX(game_archive_index), 0) + 1 FROM games").fetchone()[0]
     )
 
     inserted = 0
     updated = 0
-    for match in matches:
-        if match["match_id"] in existing:
-            archive_index = existing[match["match_id"]]
+    for match, game_index in records:
+        match_id = match["match_id"]
+        if match_id in existing_matches:
+            match_row_id, _match_archive_index = existing_matches[match_id]
         else:
-            archive_index = next_archive_index
-            next_archive_index += 1
+            match_archive_index = next_match_archive_index
+            next_match_archive_index += 1
+            con.execute(
+                """
+                INSERT INTO matches (match_id, archive_index)
+                VALUES (?, ?)
+                """,
+                (match_id, match_archive_index),
+            )
+            match_row_id = con.execute(
+                "SELECT id FROM matches WHERE match_id = ?",
+                (match_id,),
+            ).fetchone()[0]
+            existing_matches[match_id] = (match_row_id, match_archive_index)
+
+        game_key = (match_id, game_index)
+        if game_key in existing_games:
+            game_id, game_archive_index = existing_games[game_key]
+            updated += 1
+        else:
+            game_archive_index = next_game_archive_index
+            next_game_archive_index += 1
+            game_id = None
+            inserted += 1
+
         lines = cleaned_transcript_lines(match["lines"])
-        lines = transcript_with_game_header(lines, archive_index, match["match_id"])
+        lines = transcript_with_game_header(lines, game_archive_index, match_id)
         game_type = next((line for line in lines if line.startswith("Game type:")), None)
         transcript = "\n".join(lines)
         con.execute(
             """
             INSERT INTO games (
-                match_id, archive_index, game_type, has_result
+                match_row_id, game_index, game_archive_index, game_type, has_result
             )
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(match_id) DO UPDATE SET
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(match_row_id, game_index) DO UPDATE SET
+                game_archive_index=excluded.game_archive_index,
                 game_type=excluded.game_type,
                 has_result=excluded.has_result,
                 last_seen_at=CURRENT_TIMESTAMP
             """,
             (
-                match["match_id"],
-                archive_index,
+                match_row_id,
+                game_index,
+                game_archive_index,
                 game_type,
                 1 if match.get("has_result") else 0,
             ),
         )
-        game_id = con.execute(
-            "SELECT id FROM games WHERE match_id = ?",
-            (match["match_id"],),
-        ).fetchone()[0]
+        if game_id is None:
+            game_id = con.execute(
+                "SELECT id FROM games WHERE match_row_id = ? AND game_index = ?",
+                (match_row_id, game_index),
+            ).fetchone()[0]
+            existing_games[game_key] = (game_id, game_archive_index)
         con.execute(
             """
             INSERT INTO transcripts (
@@ -1958,10 +2081,10 @@ def archive_seen_games(
             """,
             (game_id, ARCHIVE_SCHEMA_VERSION, len(lines), transcript),
         )
-        if match["match_id"] in existing:
-            updated += 1
-        else:
-            inserted += 1
+        con.execute(
+            "UPDATE matches SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (match_row_id,),
+        )
     total = con.execute("SELECT count(*) FROM games").fetchone()[0]
     con.commit()
     con.close()
@@ -1975,20 +2098,29 @@ def archived_transcript_matches(db_path: Path) -> list[dict]:
     rows = list(
         con.execute(
             """
-            SELECT g.archive_index, g.match_id, g.has_result, t.content
+            SELECT
+                g.game_archive_index,
+                m.match_id,
+                m.archive_index,
+                g.game_index,
+                g.has_result,
+                t.content
             FROM games g
+            JOIN matches m ON m.id = g.match_row_id
             JOIN transcripts t ON t.game_id = g.id AND t.format = 'plain_text'
-            ORDER BY archive_index
+            ORDER BY g.game_archive_index
             """
         )
     )
     con.close()
     matches = []
-    for archive_index, match_id, has_result, transcript in rows:
+    for game_archive_index, match_id, match_archive_index, game_index, has_result, transcript in rows:
         matches.append(
             {
-                "number": archive_index,
+                "number": game_archive_index,
                 "match_id": match_id,
+                "match_number": match_archive_index,
+                "game_index": game_index,
                 "lines": transcript.splitlines(),
                 "events": [],
                 "debug_hits": [],
@@ -2083,6 +2215,7 @@ def extract_game_plays(
     event_index = 0
     seen_match_ids = set()
     skipping_duplicate_match = False
+    live_archived_match_ids = set()
     debug_grp_ids = debug_grp_ids or set()
 
     debug_counts = Counter()
@@ -2206,19 +2339,54 @@ def extract_game_plays(
                 "Postgame course/event data includes a win count after this match."
             )
 
+    def archive_live_match_if_complete(record):
+        """Persist completed live games as soon as their final result is known."""
+        if not live or not archive_db_path or not record or not record.get("has_result"):
+            return
+        match_id = record.get("match_id")
+        if match_id in live_archived_match_ids:
+            return
+        inserted, updated, total = archive_seen_games(archive_db_path, [record], [player_log])
+        live_archived_match_ids.add(match_id)
+        action = "recorded" if inserted else "refreshed" if updated else "checked"
+        print(
+            (
+                f"Live archive: {action} match {match_id}. "
+                f"Archive now contains {total} total game(s) at {archive_db_path.expanduser()}."
+            ),
+            file=sys.stderr,
+        )
+
+    def warn_live_match_not_archived(record):
+        """Explain when live exits before a game is complete enough to archive."""
+        if not live or not archive_db_path or not record or record.get("has_result"):
+            return
+        match_id = record.get("match_id") or "unknown match"
+        print(
+            (
+                f"Warning: live match {match_id} was not recorded in "
+                f"{archive_db_path.expanduser()} because no final game result was seen "
+                "before live mode stopped."
+            ),
+            file=sys.stderr,
+        )
+
     def finalize_current_match():
-        """Append a conservative notice when a match lacks final GRE results."""
+        """Finalize transcript notices and live archive writes for the current match."""
         flush_pending_event_groups()
         if current_match_record is None or current_match_record.get("finalized"):
             return
         current_match_record["finalized"] = True
         if current_match_record.get("has_result"):
+            archive_live_match_if_complete(current_match_record)
             return
         if not current_match_record.get("saw_postgame_payload"):
+            warn_live_match_not_archived(current_match_record)
             return
         emit("")
         for line in phrase_incomplete_game_notice(current_match_record.get("postgame_hint")):
             emit(line)
+        warn_live_match_not_archived(current_match_record)
 
     def reset_match_state(gsm):
         """Clear state that belongs only to the newly started Arena match."""
@@ -4162,6 +4330,7 @@ def extract_game_plays(
 
     def emit_match_results(gsm):
         """Emit game/match result lines once per unique Arena result record."""
+        emitted_result = False
         for result in gsm.get("gameInfo", {}).get("results") or []:
             scope = result.get("scope")
             winning_team_id = result.get("winningTeamId")
@@ -4183,6 +4352,9 @@ def extract_game_plays(
             emit("")
             for line in phrase_result(winner, scope_text, reason_text):
                 emit(line)
+            emitted_result = True
+        if emitted_result:
+            archive_live_match_if_complete(current_match_record)
 
     def record_debug(ann):
         """Record annotation counts and one sample payload for debug output."""
@@ -4874,7 +5046,10 @@ No pip install step is required; this script only uses Python's standard library
     parser.add_argument(
         "--live",
         action="store_true",
-        help="print the current game from its start, then watch Player.log for new lines",
+        help=(
+            "print the current game from its start, watch Player.log for new lines, "
+            "and archive completed games"
+        ),
     )
     parser.add_argument(
         "--colour",

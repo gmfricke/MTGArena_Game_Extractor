@@ -530,28 +530,85 @@ class WordingTests(unittest.TestCase):
             con = sqlite3.connect(db_path)
             row = con.execute(
                 """
-                SELECT g.match_id, g.archive_index, g.game_type, g.has_result, t.content
+                SELECT
+                    m.match_id,
+                    m.archive_index,
+                    g.game_archive_index,
+                    g.game_index,
+                    g.game_type,
+                    g.has_result,
+                    t.content
                 FROM games g
+                JOIN matches m ON m.id = g.match_row_id
                 JOIN transcripts t ON t.game_id = g.id AND t.format = 'plain_text'
                 """
             ).fetchone()
             schema_version = con.execute("PRAGMA user_version").fetchone()[0]
             source_count = con.execute("SELECT count(*) FROM log_sources").fetchone()[0]
+            match_count = con.execute("SELECT count(*) FROM matches").fetchone()[0]
+            game_count = con.execute("SELECT count(*) FROM games").fetchone()[0]
             con.close()
 
-            self.assertEqual(schema_version, 1)
+            self.assertEqual(schema_version, 2)
             self.assertEqual(source_count, 1)
+            self.assertEqual(match_count, 1)
+            self.assertEqual(game_count, 1)
             self.assertEqual(row[0], "match-1")
             self.assertEqual(row[1], 1)
-            self.assertEqual(row[2], "Game type: Constructed Duel (20 starting life)")
+            self.assertEqual(row[2], 1)
             self.assertEqual(row[3], 1)
-            self.assertIn("===== GAME 1: MATCH match-1 =====", row[4])
-            self.assertIn("I attack Opponent with A and B", row[4])
+            self.assertEqual(row[4], "Game type: Constructed Duel (20 starting life)")
+            self.assertEqual(row[5], 1)
+            self.assertIn("===== GAME 1: MATCH match-1 =====", row[6])
+            self.assertIn("I attack Opponent with A and B", row[6])
 
             archived = archived_transcript_matches(db_path)
             self.assertEqual(archived[0]["number"], 1)
             self.assertEqual(archived[0]["match_id"], "match-1")
+            self.assertEqual(archived[0]["match_number"], 1)
+            self.assertEqual(archived[0]["game_index"], 1)
             self.assertIn("I attack Opponent with A and B", archived[0]["lines"])
+
+    def test_archive_can_store_multiple_games_for_one_match(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "seen.sqlite3"
+            matches = [
+                {
+                    "number": 1,
+                    "match_id": "match-bo3",
+                    "game_index": 1,
+                    "lines": [
+                        "===== GAME 1: MATCH match-bo3 =====",
+                        "Game type: Constructed Duel (20 starting life)",
+                        "Winner: Me",
+                    ],
+                    "has_result": True,
+                },
+                {
+                    "number": 2,
+                    "match_id": "match-bo3",
+                    "game_index": 2,
+                    "lines": [
+                        "===== GAME 2: MATCH match-bo3 =====",
+                        "Game type: Constructed Duel (20 starting life)",
+                        "Winner: Opponent",
+                    ],
+                    "has_result": True,
+                },
+            ]
+
+            self.assertEqual(archive_seen_games(db_path, matches), (2, 0, 2))
+
+            con = sqlite3.connect(db_path)
+            self.assertEqual(con.execute("SELECT count(*) FROM matches").fetchone()[0], 1)
+            self.assertEqual(con.execute("SELECT count(*) FROM games").fetchone()[0], 2)
+            con.close()
+
+            archived = archived_transcript_matches(db_path)
+            self.assertEqual([match["number"] for match in archived], [1, 2])
+            self.assertEqual([match["match_number"] for match in archived], [1, 1])
+            self.assertEqual([match["game_index"] for match in archived], [1, 2])
+            self.assertEqual([match["match_id"] for match in archived], ["match-bo3", "match-bo3"])
 
     def test_default_archive_db_path_uses_current_directory(self):
         self.assertEqual(default_archive_db_path(), Path("mtga_seen_games.sqlite3"))
@@ -597,6 +654,11 @@ class WordingTests(unittest.TestCase):
                 row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")
             }
             self.assertIn("games_legacy_v0", tables)
+            self.assertIn("matches", tables)
+            self.assertIn("games", tables)
+            self.assertEqual(con.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(con.execute("SELECT count(*) FROM matches").fetchone()[0], 1)
+            self.assertEqual(con.execute("SELECT count(*) FROM games").fetchone()[0], 1)
             self.assertEqual(con.execute("SELECT count(*) FROM transcripts").fetchone()[0], 1)
             con.close()
 
