@@ -62,6 +62,7 @@ from mtga_extract_games import (
     phrase_mulligan,
     phrase_move_to_zone,
     phrase_mill_summary,
+    preferred_zone_transfer_name,
     phrase_player_has_counter,
     phrase_player_counter_change,
     phrase_player_action,
@@ -80,6 +81,7 @@ from mtga_extract_games import (
     modifier_summary_suffix,
     remove_redundant_match_winner_lines,
     resolve_stack_name,
+    replace_base_cast_name,
     resolve_input_paths,
     resource_mechanics_for_zone,
     resource_mechanics_from_text,
@@ -255,6 +257,23 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(state_player_heading("Me"), "My board")
         self.assertEqual(state_player_heading("Opponent"), "Opponent's board")
         self.assertEqual(state_player_heading("Player 1"), "Player 1's board")
+
+    def test_zone_transfer_name_prefers_annotation_grpid(self):
+        self.assertEqual(
+            preferred_zone_transfer_name("Blind Obedience", "Grand Abolisher"),
+            "Blind Obedience",
+        )
+        self.assertEqual(
+            preferred_zone_transfer_name("grpId 12345", "Grand Abolisher"),
+            "Grand Abolisher",
+        )
+        self.assertEqual(
+            replace_base_cast_name(
+                "Grand Abolisher from command zone; commander tax 2",
+                "Blind Obedience",
+            ),
+            "Blind Obedience from command zone; commander tax 2",
+        )
 
     def test_adjacent_duplicate_transcript_lines_are_combined(self):
         lines = [

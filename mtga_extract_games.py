@@ -1518,6 +1518,13 @@ def append_target_phrase(text: str, target_names: list[str]) -> str:
     return f"{text} targeting {format_target_phrase(target_names)}"
 
 
+def preferred_zone_transfer_name(detail_name: str | None, fallback_name: str | None) -> str:
+    """Prefer explicit ZoneTransfer card identity over possibly stale object state."""
+    if detail_name and not detail_name.startswith("grpId "):
+        return detail_name
+    return fallback_name or detail_name or "unknown card"
+
+
 def base_cast_name(cast_text: str) -> str:
     """Strip transcript suffixes so delayed casts can be matched by spell name."""
     return (
@@ -1525,6 +1532,14 @@ def base_cast_name(cast_text: str) -> str:
         .split(" from command zone", 1)[0]
         .split(";", 1)[0]
     )
+
+
+def replace_base_cast_name(cast_text: str, new_name: str) -> str:
+    """Keep cast suffixes while replacing stale spell identity."""
+    old_name = base_cast_name(cast_text)
+    if old_name and cast_text.startswith(old_name):
+        return f"{new_name}{cast_text[len(old_name):]}"
+    return new_name
 
 
 def is_target_like_key(key: str) -> bool:
@@ -3265,6 +3280,7 @@ def extract_game_plays(
         nonlocal suppress_phase_heading
         if not show_turn_state:
             return
+        flush_pending_battlefield_permanent_casts()
         was_suppressed = suppress_phase_heading
         suppress_phase_heading = True
         for seat in turn_state_seat_order():
@@ -3350,6 +3366,35 @@ def extract_game_plays(
             emitted_cast_instance_ids.add(instance_id)
             text = cast_text_with_targets(pending.get("source_id", instance_id), pending["text"])
             emit(phrase_player_action(pending["owner"], "cast", text))
+
+    def update_pending_stack_cast_name(instance_id, name):
+        """Retitle a delayed cast when a later stack update exposes better identity."""
+        pending = pending_stack_casts.get(instance_id)
+        if not pending or not name or name.startswith("grpId "):
+            return
+        pending["text"] = replace_base_cast_name(pending["text"], name)
+        stack_display_names[instance_id] = name
+
+    def flush_pending_battlefield_permanent_casts():
+        """Emit delayed permanent casts once current state confirms battlefield identity."""
+        for instance_id in list(pending_stack_casts):
+            obj = objects.get(instance_id, {})
+            if not is_pending_permanent_cast(instance_id) or not is_battlefield_zone(obj.get("zoneId")):
+                continue
+            update_pending_stack_cast_name(instance_id, card_label(instance_id))
+            flush_pending_stack_cast(instance_id)
+
+    def is_pending_permanent_cast(instance_id):
+        """Return true for delayed casts whose resolving object should enter the battlefield."""
+        obj = objects.get(instance_id, {})
+        card_types = set(obj.get("cardTypes") or [])
+        return bool(card_types & {
+            "CardType_Artifact",
+            "CardType_Battle",
+            "CardType_Creature",
+            "CardType_Enchantment",
+            "CardType_Planeswalker",
+        })
 
     def flush_all_pending_stack_casts():
         """Emit delayed cast lines before a game ends without resolving them."""
@@ -3548,8 +3593,14 @@ def extract_game_plays(
 
         iid = affected[0]
         owner = event_owner(ann, details)
-        name = card_label(iid, details.get("grpid"))
+        detail_name = card_name_from_grp(details.get("grpid"))
+        name = preferred_zone_transfer_name(detail_name, card_label(iid))
         from_command = is_command_zone(details.get("zone_src"))
+
+        if category not in {"CastSpell", "Resolve", "Copy"} and iid in pending_stack_casts:
+            flush_pending_event_groups()
+            update_pending_stack_cast_name(iid, name)
+            flush_pending_stack_cast(iid)
 
         if category == "PlayLand":
             flush_pending_event_groups()
@@ -3588,8 +3639,12 @@ def extract_game_plays(
                 emit(phrase_player_action(owner, "cast", cast_text))
         elif category == "Resolve":
             flush_pending_event_groups()
-            name = resolve_stack_name(iid, name, stack_display_names)
-            flush_pending_stack_cast(iid)
+            if detail_name and not detail_name.startswith("grpId "):
+                update_pending_stack_cast_name(iid, detail_name)
+            else:
+                name = resolve_stack_name(iid, name, stack_display_names)
+            if not is_pending_permanent_cast(iid):
+                flush_pending_stack_cast(iid)
             if should_infer_missing_cast_before_resolve(
                 name,
                 iid,
@@ -4669,6 +4724,10 @@ def extract_game_plays(
                             current_turn_info = turn_info
                         if "turnNumber" in turn_info and turn_info["turnNumber"] != current_turn:
                             flush_pending_event_groups()
+                            was_suppressed = suppress_phase_heading
+                            suppress_phase_heading = True
+                            flush_pending_battlefield_permanent_casts()
+                            suppress_phase_heading = was_suppressed
                             current_turn = turn_info["turnNumber"]
                             current_phase_section = None
                             emitted_phase_section = None
