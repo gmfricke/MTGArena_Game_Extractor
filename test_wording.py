@@ -523,9 +523,9 @@ class WordingTests(unittest.TestCase):
                 }
             ]
 
-            self.assertEqual(archive_seen_games(db_path, matches, [log_path]), (1, 0))
+            self.assertEqual(archive_seen_games(db_path, matches, [log_path]), (1, 0, 1))
             matches[0]["number"] = 99
-            self.assertEqual(archive_seen_games(db_path, matches, [log_path]), (0, 1))
+            self.assertEqual(archive_seen_games(db_path, matches, [log_path]), (0, 1, 1))
 
             con = sqlite3.connect(db_path)
             row = con.execute(

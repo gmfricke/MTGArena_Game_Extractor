@@ -1871,8 +1871,8 @@ def archive_seen_games(
     db_path: Path,
     matches: list[dict],
     log_paths: list[Path] | None = None,
-) -> tuple[int, int]:
-    """Store parsed transcripts by match id and return inserted/updated counts."""
+) -> tuple[int, int, int]:
+    """Store parsed transcripts and return inserted/refreshed/current archive counts."""
     db_path = db_path.expanduser()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(db_path)
@@ -1962,9 +1962,10 @@ def archive_seen_games(
             updated += 1
         else:
             inserted += 1
+    total = con.execute("SELECT count(*) FROM games").fetchone()[0]
     con.commit()
     con.close()
-    return inserted, updated
+    return inserted, updated, total
 
 
 def archived_transcript_matches(db_path: Path) -> list[dict]:
@@ -4543,9 +4544,18 @@ def extract_game_plays(
             print(f"{count:5d} {type_text}{cat_text} sample={sample}", file=sys.stderr)
 
     if archive_db_path:
-        inserted, updated = archive_seen_games(archive_db_path, transcript_matches, log_paths)
+        inserted, updated, total = archive_seen_games(
+            archive_db_path,
+            transcript_matches,
+            log_paths,
+        )
+        current_log_count = inserted + updated
         print(
-            f"Archived {inserted} new and {updated} existing game(s) to {archive_db_path.expanduser()}",
+            (
+                f"Archive refresh: found {current_log_count} game(s) in the current logs "
+                f"({inserted} new, {updated} already archived). "
+                f"Archive now contains {total} total game(s) at {archive_db_path.expanduser()}."
+            ),
             file=sys.stderr,
         )
         transcript_matches = archived_transcript_matches(archive_db_path)
