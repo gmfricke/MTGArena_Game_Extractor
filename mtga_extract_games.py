@@ -4647,8 +4647,8 @@ def extract_game_plays(
         read_mb = read_bytes / (1024 * 1024)
         total_mb = total_bytes / (1024 * 1024)
         print(
-            f"\rParsing Player.log [{bar}] {ratio:6.1%} "
-            f"({read_mb:.1f}/{total_mb:.1f} MB)",
+            f"\rReading input logs [{bar}] {ratio:6.1%} "
+            f"(Read: {read_mb:.1f}/{total_mb:.1f} MB)",
             end="",
             file=sys.stderr,
             flush=True,
