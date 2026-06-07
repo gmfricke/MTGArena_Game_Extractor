@@ -15,6 +15,7 @@ I originally wrote it because I wanted a simple way to review MTG Arena games in
 - [Common Options](#common-options)
 - [Example Transcript](#example-transcript)
 - [Debugging Choices](#debugging-choices)
+- [AI-Assisted Analysis And Responsible Use](#ai-assisted-analysis-and-responsible-use)
 - [Fair Use And Intent](#fair-use-and-intent)
 - [License](#license)
 
@@ -1991,7 +1992,7 @@ My Giada, Font of Hope dies
 Giada, Font of Hope moves to command zone
 
 -- Postcombat main --
-Game appears to have ended, but no final GRE result was written to Player.log.
+Game appears to have ended, but no final Game Rules Engine (GRE) result was written to Player.log.
 Postgame course/event data includes a loss count after this match.
 Final life total is unavailable from the gameplay log.
 ```
@@ -2037,6 +2038,36 @@ python3 mtga_extract_games.py --last 1 --debug-annotations
 ```
 
 This is meant to help find where Arena records choices like creature type, protection type, modal choices, triggered abilities, or similar decisions.
+
+## AI-Assisted Analysis And Responsible Use
+
+One of the motivations for producing a plain-text game transcript is that it can be reviewed by other software, including large language models and other AI systems.
+
+For example, a transcript can be used to:
+
+- Review games after they finish.
+- Identify key decision points.
+- Analyze deck performance over many games.
+- Study sequencing, combat, mulligans, and resource management.
+- Generate summaries and coaching suggestions.
+
+I primarily use the transcripts for post-game review and experimentation with AI-assisted analysis. You can ask an AI system for feedback and advice after a game, or use the `--live` feature to feed a current transcript into another program for in-game advice.
+
+### Real-Time Assistance
+
+This tool itself does not make gameplay decisions, interact with MTG Arena, automate actions, or provide recommendations. It only reconstructs information already present in the Arena log and presents it in a human-readable form.
+
+However, because the transcript is plain text, it is technically possible to feed a live transcript into another program and request strategic advice while a game is still in progress.
+
+Whether this is appropriate depends on the rules, policies, and expectations of the platform, event, or community in which the game is being played.
+
+A useful analogy is computer chess. Modern chess engines are invaluable for post-game analysis, training, and study. At the same time, receiving engine recommendations during a competitive game is generally considered outside assistance and is prohibited in most organized play.
+
+Many players view real-time AI assistance in card games similarly. Post-game analysis is widely accepted. Real-time strategic advice during competitive play is often considered a different category.
+
+Users are responsible for understanding and complying with the rules of any platform, tournament, league, or event in which they participate.
+
+This project is intended primarily as a logging, archival, debugging, and post-game analysis tool.
 
 ## Fair Use And Intent
 

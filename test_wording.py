@@ -898,7 +898,7 @@ class WordingTests(unittest.TestCase):
                 "Postgame course/event data includes a loss count after this match."
             ),
             [
-                "Game appears to have ended, but no final GRE result was written to Player.log.",
+                "Game appears to have ended, but no final Game Rules Engine (GRE) result was written to Player.log.",
                 "Postgame course/event data includes a loss count after this match.",
                 "Final life total is unavailable from the gameplay log.",
             ],

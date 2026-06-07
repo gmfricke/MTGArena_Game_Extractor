@@ -1726,7 +1726,7 @@ def phrase_choice_value(domain_text: str, value: int, decoded_value: str | None)
 def phrase_incomplete_game_notice(postgame_hint: str | None = None) -> list[str]:
     """Explain that Arena returned postgame data without final GRE results."""
     lines = [
-        "Game appears to have ended, but no final GRE result was written to Player.log."
+        "Game appears to have ended, but no final Game Rules Engine (GRE) result was written to Player.log."
     ]
     if postgame_hint:
         lines.append(postgame_hint)
