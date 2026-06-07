@@ -1,4 +1,4 @@
-# MTG Arena Game Extractor
+# Magic the Gathering Arena (MTGA) Game Extractor
 
 MTG Arena Game Extractor is an open-source MTG Arena log parser that reconstructs complete games from Arena's Player.log and UTC log files and produces human-readable text transcripts.
 
