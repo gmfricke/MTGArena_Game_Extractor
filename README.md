@@ -691,9 +691,9 @@ Whether this is appropriate depends on the rules, policies, and expectations of 
 
 A useful analogy is computer chess. Modern chess engines are invaluable for post-game analysis, training, and study. At the same time, receiving engine recommendations during a competitive game is generally considered outside assistance and is prohibited in most organized play.
 
-Many players view real-time AI assistance in card games similarly. Post-game analysis is widely accepted. Real-time strategic advice during competitive play is often considered unfair.  
+Many players view real-time AI assistance in card games similarly. Post-game analysis is widely accepted. Real-time strategic advice during competitive play is often considered unfair.
 
-Users are responsible for understanding and complying with the rules of any platform, tournament, league, or event in which they participate. Sadly, using LLMs to assist in MTG games runs the risk of an AI arms race where play comes down to who has the bast AI assistant. Chess recognises the role of AI in modern play but is still popular for play by unassisted humans. I hope it works out that way for MTG.
+Users are responsible for understanding and complying with the rules of any platform, tournament, league, or event in which they participate. Sadly, using LLMs to assist in MTG games runs the risk of an AI arms race where play comes down to who has the best AI assistant. Chess recognises the role of AI in modern play but is still popular for play by unassisted humans. I hope it works out that way for MTG.
 
 This project is intended primarily as a logging, archival, debugging, and post-game analysis tool.
 
