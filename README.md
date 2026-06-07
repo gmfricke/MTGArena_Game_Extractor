@@ -719,4 +719,28 @@ There is no intent to decode, decrypt, or bypass anything. There is no intent to
 
 This project is released under the MIT License.
 
-It is provided as-is, with no warranty. If you choose to use it, you are responsible for what you do with it. I am not liable for any damages or problems that come from using this software.
+The spirit of the MIT License is simple: keep the copyright notice, don’t sue previous authors if there are problems, and otherwise do whatever you like with the code: use it, modify it, redistribute it, or build on it. 
+
+If you contribute to the project, feel free to add your own copyright notice for your contributions. You may license your own work however you choose, including under the MIT License, a commercial license, or another open-source license. Just keep the original copyright notice and MIT license text intact. The ability to use whatever license you like for your contributions is what makes the MIT license more permissive than Copyleft licenses. 
+
+### MIT License
+
+Copyright (c) Copyright (c) 2026 Matthew Fricke
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+*The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.*
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
