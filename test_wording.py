@@ -104,6 +104,7 @@ from mtga_extract_games import (
 
 class WordingTests(unittest.TestCase):
     def test_me_as_subject_becomes_i(self):
+        """Check me as subject becomes i."""
         self.assertEqual(state_player_label("Me"), "I")
         self.assertEqual(
             phrase_player_action("Me", "cast", "Giada, Font of Hope"),
@@ -111,6 +112,7 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_transcript_line_color_helpers(self):
+        """Check transcript line color helpers."""
         self.assertEqual(transcript_line_perspective("I cast Giada, Font of Hope"), "me")
         self.assertEqual(transcript_line_perspective("My hand: Plains"), "me")
         self.assertEqual(transcript_line_perspective("My board:"), "me")
@@ -163,6 +165,7 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(colorize_transcript_line("I cast Giada", False), "I cast Giada")
 
     def test_card_name_color_helpers_use_card_metadata(self):
+        """Check card name color helpers use card metadata."""
         metadata = {
             1: {
                 "name": "Giada, Font of Hope",
@@ -251,6 +254,7 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_turn_state_uses_possessive_labels(self):
+        """Check turn state uses possessive labels."""
         self.assertEqual(state_zone_label("Me", "board"), "My board")
         self.assertEqual(state_zone_label("Opponent", "hand"), "Opponent's hand")
         self.assertEqual(state_zone_label("Player 1", "library"), "Player 1's library")
@@ -259,6 +263,7 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(state_player_heading("Player 1"), "Player 1's board")
 
     def test_zone_transfer_name_prefers_annotation_grpid(self):
+        """Check zone transfer name prefers annotation grpid."""
         self.assertEqual(
             preferred_zone_transfer_name("Blind Obedience", "Grand Abolisher"),
             "Blind Obedience",
@@ -276,6 +281,7 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_adjacent_duplicate_transcript_lines_are_combined(self):
+        """Check adjacent duplicate transcript lines are combined."""
         lines = [
             "=== Turn 4: Opponent ===",
             "Opponent attacks me with Tentacle",
@@ -300,6 +306,7 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_repeated_damage_life_sequences_are_combined(self):
+        """Check repeated damage life sequences are combined."""
         lines = [
             "A copy of Shock deals 2 damage to me",
             "I lose 2 life (15)",
@@ -321,6 +328,7 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_copy_resolve_moves_after_revealed_return(self):
+        """Check copy resolve moves after revealed return."""
         lines = [
             "A copy of Repulse resolves",
             "I reveal Resplendent Angel",
@@ -340,6 +348,7 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_adjacent_same_target_attacks_are_combined(self):
+        """Check adjacent same target attacks are combined."""
         lines = [
             "I play Temple of Enlightenment",
             "I attack Opponent with Healer's Hawk",
@@ -367,6 +376,7 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_redundant_match_winner_is_removed_after_same_game_winner(self):
+        """Check redundant match winner is removed after same game winner."""
         self.assertEqual(
             remove_redundant_match_winner_lines(
                 [
@@ -389,6 +399,7 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_game_selection_modes(self):
+        """Check game selection modes."""
         matches = [{"number": number} for number in range(1, 6)]
         self.assertEqual(
             [match["number"] for match in select_transcript_matches(matches)[0]],
@@ -416,6 +427,7 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_live_selection_conflict_ignores_default_all_false(self):
+        """Check live selection conflict ignores default all false."""
         args = Namespace(
             all=False,
             select=None,
@@ -434,6 +446,7 @@ class WordingTests(unittest.TestCase):
         self.assertTrue(has_live_selection_conflict(args))
 
     def test_game_type_formatting(self):
+        """Check game type formatting."""
         brawl_info = {
             "type": "GameType_Duel",
             "variant": "GameVariant_Brawl",
@@ -475,6 +488,7 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_path_resolution_uses_explicit_paths(self):
+        """Check path resolution uses explicit paths."""
         with tempfile.TemporaryDirectory() as tmpdir:
             player_log = Path(tmpdir) / "Player.log"
             carddb = Path(tmpdir) / "Raw_CardDatabase_test.mtga"
@@ -488,6 +502,7 @@ class WordingTests(unittest.TestCase):
             self.assertIsNone(warning)
 
     def test_player_prev_log_is_read_before_current_log(self):
+        """Check player prev log is read before current log."""
         with tempfile.TemporaryDirectory() as tmpdir:
             player_log = Path(tmpdir) / "Player.log"
             previous_log = Path(tmpdir) / "Player-prev.log"
@@ -501,6 +516,7 @@ class WordingTests(unittest.TestCase):
             self.assertEqual(player_log_paths_for_reading(player_log, live=True), [player_log])
 
     def test_archive_logs_are_read_before_player_logs(self):
+        """Check archive logs are read before player logs."""
         with tempfile.TemporaryDirectory() as tmpdir:
             player_log = Path(tmpdir) / "Player.log"
             previous_log = Path(tmpdir) / "Player-prev.log"
@@ -523,6 +539,7 @@ class WordingTests(unittest.TestCase):
                 )
 
     def test_seen_games_archive_is_keyed_by_match_id(self):
+        """Check seen games archive is keyed by match id."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "seen.sqlite3"
             log_path = Path(tmpdir) / "Player.log"
@@ -589,6 +606,7 @@ class WordingTests(unittest.TestCase):
             self.assertIn("I attack Opponent with A and B", archived[0]["lines"])
 
     def test_archive_can_store_multiple_games_for_one_match(self):
+        """Check archive can store multiple games for one match."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "seen.sqlite3"
             matches = [
@@ -630,9 +648,11 @@ class WordingTests(unittest.TestCase):
             self.assertEqual([match["match_id"] for match in archived], ["match-bo3", "match-bo3"])
 
     def test_default_archive_db_path_uses_current_directory(self):
+        """Check default archive db path uses current directory."""
         self.assertEqual(default_archive_db_path(), Path("mtga_seen_games.sqlite3"))
 
     def test_archive_schema_migrates_legacy_transcript_table(self):
+        """Check archive schema migrates legacy transcript table."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "legacy.sqlite3"
             con = sqlite3.connect(db_path)
@@ -682,6 +702,7 @@ class WordingTests(unittest.TestCase):
             con.close()
 
     def test_path_resolution_uses_environment_paths(self):
+        """Check path resolution uses environment paths."""
         with tempfile.TemporaryDirectory() as tmpdir:
             player_log = Path(tmpdir) / "Player.log"
             carddb = Path(tmpdir) / "Raw_CardDatabase_test.mtga"
@@ -701,6 +722,7 @@ class WordingTests(unittest.TestCase):
             self.assertIn(str(player_log), warning)
 
     def test_live_path_warning_only_lists_current_log(self):
+        """Check live path warning only lists current log."""
         with tempfile.TemporaryDirectory() as tmpdir:
             player_log = Path(tmpdir) / "Player.log"
             previous_log = Path(tmpdir) / "Player-prev.log"
@@ -725,6 +747,7 @@ class WordingTests(unittest.TestCase):
             self.assertNotIn(str(previous_log), warning)
 
     def test_path_resolution_error_explains_setup(self):
+        """Check path resolution error explains setup."""
         missing_log = Path("/tmp/definitely-missing-mtga-player-log")
         missing_carddb = Path("/tmp/definitely-missing-mtga-carddb.mtga")
         with self.assertRaises(FileNotFoundError) as context:
@@ -736,6 +759,7 @@ class WordingTests(unittest.TestCase):
         self.assertIn("export CARDDB=", message)
 
     def test_me_as_object_becomes_me(self):
+        """Check me as object becomes me."""
         self.assertEqual(object_pronoun("Me"), "me")
         self.assertEqual(
             phrase_player_action("Opponent", "attack", "me with Serra's Emissary"),
@@ -743,6 +767,7 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_opponent_wording_stays_third_person(self):
+        """Check opponent wording stays third person."""
         self.assertEqual(subject_pronoun("Opponent"), "Opponent")
         self.assertEqual(
             phrase_player_action("Opponent", "cast", "Arcane Signet"),
@@ -750,6 +775,7 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_life_change_wording(self):
+        """Check life change wording."""
         self.assertEqual(phrase_life_change("Me", 4, 29), "I gain 4 life (29)")
         self.assertEqual(
             phrase_life_change("Opponent", -2, 18),
@@ -783,6 +809,7 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(life_change_group_source("Vindictive Vampire"), "Vindictive Vampire ability")
 
     def test_death_wording(self):
+        """Check death wording."""
         self.assertEqual(
             phrase_death("Opponent", "Inspiring Overseer"),
             "Opponent's Inspiring Overseer dies",
@@ -791,6 +818,7 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(phrase_death(None, "Angel"), "Angel dies")
 
     def test_extra_event_wording(self):
+        """Check extra event wording."""
         self.assertEqual(phrase_draw("Me", "Plains", True), "I draw Plains")
         self.assertEqual(phrase_draw("Opponent", "Plains", False), "Opponent draws a card")
         self.assertEqual(
@@ -810,6 +838,7 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_grouped_identical_token_deaths(self):
+        """Check grouped identical token deaths."""
         self.assertEqual(
             phrase_grouped_deaths("Opponent", "Human", 2),
             "2 opponent Human tokens die",
@@ -821,6 +850,7 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_enters_attacking_wording(self):
+        """Check enters attacking wording."""
         self.assertEqual(
             phrase_enters_attacking(
                 "Raph & Mikey, Troublemakers trigger",
@@ -834,6 +864,7 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_attack_phrase_suppresses_unknown_target(self):
+        """Check attack phrase suppresses unknown target."""
         self.assertEqual(
             attack_phrase("Invasion of Zendikar", "Urza's Construction Drone"),
             "Invasion of Zendikar with Urza's Construction Drone",
@@ -844,6 +875,7 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_passive_zone_change_wording_examples(self):
+        """Check passive zone change wording examples."""
         self.assertEqual(
             phrase_zone_change(None, "exile", "Giada, Font of Hope"),
             "Giada, Font of Hope is exiled",
@@ -858,6 +890,7 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_concede_result_wording(self):
+        """Check concede result wording."""
         self.assertEqual(
             phrase_concede_result("Me", "game"),
             ["Opponent concedes", "Winner: Me"],
@@ -872,6 +905,7 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_result_wording_avoids_duplicate_labels(self):
+        """Check result wording avoids duplicate labels."""
         self.assertEqual(phrase_result("Opponent", "game", "game"), ["Winner: Opponent"])
         self.assertEqual(
             phrase_result("Opponent", "match", "game"),
@@ -879,11 +913,13 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_lethal_life_loss_is_kept_before_winner_line(self):
+        """Check lethal life loss is kept before winner line."""
         lines = [phrase_life_change("Me", -18, -3)]
         lines.extend(phrase_result("Opponent", "game", "game"))
         self.assertEqual(lines, ["I lose 18 life (-3)", "Winner: Opponent"])
 
     def test_numeric_choice_fallback_explains_domain(self):
+        """Check numeric choice fallback explains domain."""
         self.assertEqual(
             phrase_choice_value("creature type", 19, None),
             "unknown creature type 19",
@@ -893,6 +929,7 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(phrase_choice_value("mana value parity", 0, "even"), "even")
 
     def test_incomplete_game_notice_is_conservative(self):
+        """Check incomplete game notice is conservative."""
         self.assertEqual(
             phrase_incomplete_game_notice(
                 "Postgame course/event data includes a loss count after this match."
@@ -905,6 +942,7 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_enum_loader_reads_creature_types_from_card_database(self):
+        """Check enum loader reads creature types from card database."""
         with tempfile.TemporaryDirectory() as tmpdir:
             carddb = Path(tmpdir) / "carddb.mtga"
             con = sqlite3.connect(carddb)
@@ -934,6 +972,7 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(clean_localized_enum_name("<nobr>Assembly-Worker</nobr>"), "Assembly-Worker")
 
     def test_card_metadata_loader_reads_types_and_resource_mechanics(self):
+        """Check card metadata loader reads types and resource mechanics."""
         with tempfile.TemporaryDirectory() as tmpdir:
             carddb = Path(tmpdir) / "carddb.mtga"
             con = sqlite3.connect(carddb)
@@ -973,6 +1012,7 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(metadata[300]["play_mechanics"], ["escape"])
 
     def test_ability_text_loader_reads_modal_child_text(self):
+        """Check ability text loader reads modal child text."""
         with tempfile.TemporaryDirectory() as tmpdir:
             carddb = Path(tmpdir) / "carddb.mtga"
             con = sqlite3.connect(carddb)
@@ -1002,6 +1042,7 @@ class WordingTests(unittest.TestCase):
             )
 
     def test_available_resource_helpers(self):
+        """Check available resource helpers."""
         land_meta = {"type_numbers": {5}}
         creature_meta = {"type_numbers": {2}}
         self.assertEqual(parse_carddb_int_list("6832:437616,165909:683428"), [6832, 165909])
@@ -1028,6 +1069,7 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_commander_wording(self):
+        """Check commander wording."""
         self.assertEqual(
             phrase_commander_cast_note(2),
             "commander cast #2; next commander tax +4",
@@ -1049,6 +1091,7 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(object_pronoun("Me"), "me")
 
     def test_player_counter_wording(self):
+        """Check player counter wording."""
         self.assertEqual(
             phrase_player_counter_change("Me", "poison", 1, 1),
             "I get 1 poison counter (1 total)",
@@ -1072,6 +1115,7 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(scaled_power_toughness_counter("+1/+1", 38), "+38/+38")
 
     def test_attachment_summary_wording(self):
+        """Check attachment summary wording."""
         self.assertEqual(
             grouped_name_phrase(["Crystal Carapace", "Crystal Carapace"]),
             "2x Crystal Carapace",
@@ -1102,11 +1146,13 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_ownership_summary_wording(self):
+        """Check ownership summary wording."""
         self.assertIsNone(ownership_summary_part("Me", "Me"))
         self.assertEqual(ownership_summary_part("Opponent", "Me"), "owned by me")
         self.assertEqual(ownership_summary_part("Me", "Opponent"), "owned by Opponent")
 
     def test_repeated_hidden_card_wording(self):
+        """Check repeated hidden card wording."""
         self.assertEqual(compact_counted_name("unknown card", 1), "unknown card")
         self.assertEqual(compact_counted_name("unknown card", 7), "7 unknown cards")
         self.assertEqual(
@@ -1116,6 +1162,7 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(compact_counted_name("Island", 2), "2x Island")
 
     def test_target_phrase_wording(self):
+        """Check target phrase wording."""
         self.assertEqual(
             append_target_phrase("Into the Roil", ["K'rrik, Son of Yawgmoth"]),
             "Into the Roil targeting K'rrik, Son of Yawgmoth",
@@ -1135,6 +1182,7 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_target_debug_path_detection(self):
+        """Check target debug path detection."""
         self.assertIn(
             "annotations[0].details[0].targetId",
             find_target_like_paths(
@@ -1143,11 +1191,13 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_library_count_wording(self):
+        """Check library count wording."""
         self.assertEqual(phrase_library_count("Me", 1), "Me: 1 card")
         self.assertEqual(phrase_library_count("Opponent", 42), "Opponent: 42 cards")
         self.assertEqual(phrase_library_count("Player 1", None), "Player 1: unknown")
 
     def test_mulligan_wording_does_not_assume_hand_size(self):
+        """Check mulligan wording does not assume hand size."""
         self.assertEqual(phrase_mulligan("Me"), "I mulligan")
         self.assertEqual(phrase_mulligan("Me", 7), "I mulligan (kept 7 cards)")
         self.assertEqual(
@@ -1156,6 +1206,7 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_low_fidelity_update_without_turn_context_is_delayed(self):
+        """Check low fidelity update without turn context is delayed."""
         self.assertTrue(is_low_fidelity_update_without_turn({"update": "GameStateUpdate_Send"}))
         self.assertFalse(
             is_low_fidelity_update_without_turn(
@@ -1165,6 +1216,7 @@ class WordingTests(unittest.TestCase):
         self.assertFalse(is_low_fidelity_update_without_turn({"update": "GameStateUpdate_SendHiFi"}))
 
     def test_missing_cast_inference_only_for_named_card_spells(self):
+        """Check missing cast inference only for named card spells."""
         emitted = {12}
         self.assertTrue(
             should_infer_missing_cast_before_resolve(
@@ -1216,10 +1268,12 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_anonymous_resolve_suppression(self):
+        """Check anonymous resolve suppression."""
         self.assertFalse(should_emit_resolve_line("instance 729", 729))
         self.assertTrue(should_emit_resolve_line("Petty Theft", 729))
 
     def test_adventure_resolve_uses_stack_name(self):
+        """Check adventure resolve uses stack name."""
         self.assertEqual(
             resolve_stack_name(561, "Brazen Borrower", {561: "Petty Theft"}),
             "Petty Theft",
@@ -1227,15 +1281,18 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(resolve_stack_name(908, "Brazen Borrower", {}), "Brazen Borrower")
 
     def test_countered_spell_copy_wording_is_distinct(self):
+        """Check countered spell copy wording is distinct."""
         self.assertEqual(copied_object_label("Heartless Act", True), "A copy of Heartless Act")
         self.assertEqual(copied_object_label("Heartless Act", False), "Heartless Act")
         self.assertEqual(copied_object_label("Mesmeric Orb", True), "A copy of Mesmeric Orb")
 
     def test_ability_object_wording_uses_source_card(self):
+        """Check ability object wording uses source card."""
         self.assertEqual(ability_object_label("Mesmeric Orb", True), "Mesmeric Orb trigger")
         self.assertEqual(ability_object_label("Cavern of Souls", False), "Cavern of Souls ability")
 
     def test_ability_source_instance_id_uses_parent(self):
+        """Check ability source instance id uses parent."""
         self.assertEqual(
             ability_source_instance_id(
                 {"type": "GameObjectType_Ability", "parentId": 1407}
@@ -1245,11 +1302,13 @@ class WordingTests(unittest.TestCase):
         self.assertIsNone(ability_source_instance_id({"type": "GameObjectType_Card"}))
 
     def test_hidden_arena_object_detection(self):
+        """Check hidden arena object detection."""
         self.assertTrue(is_hidden_arena_object({"isFacedown": True, "grpId": 3}))
         self.assertTrue(is_hidden_arena_object({"grpId": 3}))
         self.assertFalse(is_hidden_arena_object({"grpId": 90933}))
 
     def test_grouped_mill_wording_is_source_aware(self):
+        """Check grouped mill wording is source aware."""
         self.assertEqual(
             phrase_mill_summary("Mesmeric Orb", "Me", 13),
             "Mesmeric Orb triggers resolve; I mill 13 cards",
@@ -1264,12 +1323,14 @@ class WordingTests(unittest.TestCase):
         )
 
     def test_leyline_active_effect_wording(self):
+        """Check leyline active effect wording."""
         self.assertEqual(
             active_effect_for_resolved_permanent("Leyline of the Void", "Opponent"),
             "Leyline of the Void exiles opponents' cards that would go to graveyard",
         )
 
     def test_unidentified_death_is_suppressed(self):
+        """Check unidentified death is suppressed."""
         self.assertIsNone(death_label_or_none("instance 913", 913))
         self.assertEqual(death_label_or_none("Spirit token", 913), "Spirit token")
 

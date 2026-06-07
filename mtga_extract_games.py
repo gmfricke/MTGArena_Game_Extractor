@@ -1,4 +1,14 @@
 #!/usr/bin/env python3
+"""Extract MTG Arena logs into readable transcripts.
+
+The code is organized around the parser's data flow: the top section loads card
+and path metadata, the middle sections format transcript text and maintain the
+archive database, and `extract_game_plays` contains the stateful Game Rules
+Engine event parser that turns Arena JSON updates into turn-by-turn game text.
+The overall goal is to preserve games from rotating Arena logs and make them
+easy for humans and other tools to review.
+"""
+
 import argparse
 import json
 import os
@@ -43,11 +53,13 @@ INFECT_ABILITY_GRP_IDS = {91}
 
 
 def clear_all(*containers):
+    """Clear several mutable containers that track per-game parser state."""
     for container in containers:
         container.clear()
 
 
 def build_choice_value_names(subtype_names: dict[int, str]) -> dict[int, dict[int, str]]:
+    """Build lookup tables for numeric Arena choice values, including card database creature types."""
     values = {domain: dict(names) for domain, names in BASE_CHOICE_VALUE_NAMES.items()}
     values[5] = {1: "Angel", **subtype_names}
     return values
@@ -845,6 +857,7 @@ def colorize_list_conjunctions(line: str, outer_color: str | None) -> str:
         return line
 
     def replace(match):
+        """Replace a highlighted list conjunction with neutral colour and restore the outer colour."""
         return f"{match.group(1)}{ANSI_RESET}{COLOURLESS_MANA_COLOR}and{ANSI_RESET}{outer_color} "
 
     return re.sub(r"([;\s])and (?=\033\[)", replace, line)
@@ -864,6 +877,7 @@ def colorize_card_names(
     name_pattern = name_pattern or LAND_NAME_PATTERN
 
     def replace(match):
+        """Replace a matched card name with its mana-coloured transcript form."""
         name = match.group(0)
         coloured_name = colorize_card_name(name, palette_for_card_name(name, name_colors))
         if outer_color:
@@ -1756,10 +1770,12 @@ def new_match_record(number: int, match_id: str, lines: list[str]) -> dict:
 
 
 def default_archive_db_path() -> Path:
+    """Return the default archive database path in the current working directory."""
     return Path("mtga_seen_games.sqlite3")
 
 
 def cleaned_transcript_lines(lines: list[str]) -> list[str]:
+    """Apply all transcript cleanup and compaction passes in display order."""
     return remove_redundant_match_winner_lines(
         combine_adjacent_attack_lines(
             combine_duplicate_transcript_lines(
@@ -1772,6 +1788,7 @@ def cleaned_transcript_lines(lines: list[str]) -> list[str]:
 
 
 def transcript_with_game_header(lines: list[str], number: int, match_id: str) -> list[str]:
+    """Return transcript lines with a stable archive game header for the given match."""
     header = f"===== GAME {number}: MATCH {match_id} ====="
     if lines and lines[0].startswith("===== GAME ") and f"MATCH {match_id}" in lines[0]:
         return [header, *lines[1:]]
@@ -1779,6 +1796,7 @@ def transcript_with_game_header(lines: list[str], number: int, match_id: str) ->
 
 
 def ensure_archive_schema(con) -> None:
+    """Create or migrate the SQLite archive schema to the version supported by this program."""
     current_version = con.execute("PRAGMA user_version").fetchone()[0]
     if current_version > ARCHIVE_SCHEMA_VERSION:
         raise ValueError(
@@ -2310,6 +2328,7 @@ def extract_game_plays(
         emitted_phase_section = current_phase_section
 
     def emit(line=""):
+        """Append a transcript line and print it immediately in live mode."""
         emit_phase_heading_if_needed(line)
         if current_match_lines is not None:
             current_match_lines.append(line)
@@ -3813,6 +3832,7 @@ def extract_game_plays(
         game_state_id = gsm.get("gameStateId")
 
         def life_key(life_ann, life_seat, life_delta):
+            """Build a de-duplication key for one life-change annotation."""
             return (current_match, game_state_id, life_ann.get("id"), life_seat, life_delta)
 
         key = life_key(ann, seat, delta)
@@ -4631,6 +4651,7 @@ def extract_game_plays(
                 current_match_record["trigger_events"].append(event)
 
     def render_progress(force=False):
+        """Render the input-log read progress bar to stderr when progress output is enabled."""
         nonlocal last_progress_at
         if not show_progress or total_bytes <= 0:
             return
@@ -4945,6 +4966,7 @@ def extract_game_plays(
 
 
 def main() -> None:
+    """Parse command-line arguments and run the MTG Arena transcript extractor."""
     parser = argparse.ArgumentParser(
         description=(
             "Extract readable MTG Arena game transcripts from Player.log. "
