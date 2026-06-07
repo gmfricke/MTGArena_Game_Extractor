@@ -16,6 +16,7 @@ I originally wrote it because I wanted a simple way to review MTG Arena games in
 - [Example Transcript](#example-transcript)
 - [Debugging Choices](#debugging-choices)
 - [AI-Assisted Analysis And Responsible Use](#ai-assisted-analysis-and-responsible-use)
+- [Development Transparency](#development-transparency)
 - [Fair Use And Intent](#fair-use-and-intent)
 - [License](#license)
 
@@ -695,6 +696,16 @@ Many players view real-time AI assistance in card games similarly. Post-game ana
 Users are responsible for understanding and complying with the rules of any platform, tournament, league, or event in which they participate.
 
 This project is intended primarily as a logging, archival, debugging, and post-game analysis tool.
+
+## Development Transparency
+
+This project was written with the assistance of Codex.
+
+I have been a programmer since I was 12, so for more than 40 years at the time this README was written. LLM-assisted coding is currently still sometimes controversial, and I think it is worth being explicit about how I used it here.
+
+I used this project in part to see how far I could go with Codex in a fairly deterministic, low-stakes, and easily evaluated domain. MTG Arena logs are obscure and noisy, but the output is testable: either the transcript matches what happened in the game, or it does not.
+
+With Codex, I was able to produce something I find very helpful in a few days. Without that assistance, this would probably have taken me months, or more likely I would have given up while reading through obscure JSON output and trying to find the patterns by hand.
 
 ## Fair Use And Intent
 
