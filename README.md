@@ -687,6 +687,8 @@ This tool itself does not make gameplay decisions, interact with MTG Arena, auto
 
 However, because the transcript is plain text, it is technically possible to feed a live transcript into another program and request strategic advice while a game is still in progress.
 
+Players already appear to be pasting Arena screenshots into LLMs to get feedback. That can be useful for review, but it is usually too slow and cumbersome for interactive play. A side effect of this logger is that the game state can be provided as text while the game is happening, which means an LLM can potentially provide real-time assistance. That changes the nature of AI assistance from post-game analysis into something closer to having the LLM play the game for you.
+
 Whether this is appropriate depends on the rules, policies, and expectations of the platform, event, or community in which the game is being played.
 
 A useful analogy is computer chess. Modern chess engines are invaluable for post-game analysis, training, and study. At the same time, receiving engine recommendations during a competitive game is generally considered outside assistance and is prohibited in most organized play.
