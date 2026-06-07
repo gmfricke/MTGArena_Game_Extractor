@@ -703,7 +703,7 @@ This project is intended primarily as a logging, archival, debugging, and post-g
 
 This project was written with the assistance of Codex.
 
-I have been a programmer since I was 12, so for more than 40 years at the time this README was written. LLM-assisted coding is currently still sometimes controversial, and I think it is worth being explicit about how I used it here. Just as it took years for assembly programmers to come to trust and use compilers after their introduction but now all programmers use compilers. Similarly, soon (and already in many large companies) the question is not why are you using LLMs to code it will be why *aren't* you using LLMs to code. I expect to look back at this section in 10 years and wonder why I bothered to mention codex at all.  
+I have been a programmer since I was 12, so for more than 40 years at the time this README was written. LLM-assisted coding is currently still sometimes controversial, and I think it is worth being explicit about how I used it here. Just as it took years for assembly programmers to come to trust and use compilers after their introduction but now all programmers use compilers, similarly, soon (and already in many large companies) the question will not be "why are you using LLMs to code" it will be "why *aren't* you using LLMs to code". I expect to look back at this section in 10 years and wonder why I bothered to mention codex at all.  
 
 I used this project in part to see how far I could go with Codex in a fairly deterministic, low-stakes, and easily evaluated domain. MTG Arena logs are obscure and noisy, but the output is testable: either the transcript matches what happened in the game, or it does not.
 
