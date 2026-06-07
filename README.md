@@ -253,7 +253,19 @@ This is a representative completed game extracted with normal transcript options
 python3 mtga_extract_games.py --last 1
 ```
 
+The startup diagnostics show which Arena logs and card database were used before
+the transcript is printed:
+
 ```text
+Using logs:
+  ~/Library/Application Support/com.wizards.mtga/Logs/Logs/UTC_Log - 06-05-2026 16.34.33.log
+  ~/Library/Application Support/com.wizards.mtga/Logs/Logs/UTC_Log - 06-07-2026 12.49.07.log
+  ~/Library/Application Support/com.wizards.mtga/Logs/Logs/UTC_Log - 06-07-2026 13.25.30.log
+  ~/Library/Logs/Wizards Of The Coast/MTGA/Player-prev.log
+  ~/Library/Logs/Wizards Of The Coast/MTGA/Player.log
+Using card database: ~/Library/Application Support/com.wizards.mtga/Downloads/Raw/Raw_CardDatabase_e1d409304888cabe6c6012d9ce4c4855.mtga
+Archive refresh: found 118 game(s) in the current logs (0 new, 118 already archived). Archive now contains 122 total game(s) at mtga_seen_games.sqlite3.
+
 ===== GAME 122: MATCH 469be241-82e0-4347-b105-4fceb6341f56 =====
 Game type: Constructed Brawl (25 starting life)
 
