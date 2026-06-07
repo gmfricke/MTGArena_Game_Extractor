@@ -678,7 +678,7 @@ For example, a transcript can be used to:
 - Study sequencing, combat, mulligans, and resource management.
 - Generate summaries and coaching suggestions.
 
-I primarily use the transcripts for post-game review and experimentation with AI-assisted analysis. You can ask an AI system for feedback and advice after a game, or use the `--live` feature to feed a current transcript into another program for in-game advice.
+I primarily use the transcripts for post-game review and experimentation with AI-assisted analysis. You can ask an AI system for feedback and advice after a game, or use the `--live` feature to feed a current transcript into another program for in-game advice. I've certainly benefitted from an AI catching interaction options that I just didn't see and from summarising opponent engines that I wasn't familiar with and suggesting ways to stall them.
 
 ### Real-Time Assistance
 
@@ -690,7 +690,7 @@ Whether this is appropriate depends on the rules, policies, and expectations of 
 
 A useful analogy is computer chess. Modern chess engines are invaluable for post-game analysis, training, and study. At the same time, receiving engine recommendations during a competitive game is generally considered outside assistance and is prohibited in most organized play.
 
-Many players view real-time AI assistance in card games similarly. Post-game analysis is widely accepted. Real-time strategic advice during competitive play is often considered a different category. I've certainly benefitted from an AI catching interaction options that I just didn't see and from summarising opponent engines that I wasn't familiar with and suggesting ways to stall them. 
+Many players view real-time AI assistance in card games similarly. Post-game analysis is widely accepted. Real-time strategic advice during competitive play is often considered unfair.  
 
 Users are responsible for understanding and complying with the rules of any platform, tournament, league, or event in which they participate. Sadly, using LLMs to assist in MTG games runs the risk of an AI arms race where play comes down to who has the bast AI assistant. Chess recognises the role of AI in modern play but is still popular for play by unassisted humans. I hope it works out that way for MTG.
 
