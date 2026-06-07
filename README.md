@@ -250,6 +250,8 @@ This is a representative completed game extracted with normal transcript options
 python3 mtga_extract_games.py --last 1 --no-resolves
 ```
 
+Note that the game ended when one of the players tried to draw from an empty library. Arena did not include the last actions in the log which often happens if there are a large number of actions on the stack resolving at once to trigger a win. The end of game and who won was inferred from the game stat update.
+
 ```text
 ===== GAME 122: MATCH 469be241-82e0-4347-b105-4fceb6341f56 =====
 Game type: Constructed Brawl (25 starting life)
