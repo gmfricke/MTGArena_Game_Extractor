@@ -1157,6 +1157,31 @@ def damage_mark_suffix(marked_damage, toughness) -> str:
     return f" ({marked_damage} damage marked)"
 
 
+def arena_value_int(value) -> int | None:
+    """Extract an integer from Arena scalar fields that may be wrapped as {'value': N}."""
+    if isinstance(value, dict):
+        value = value.get("value")
+    return value if isinstance(value, int) else None
+
+
+def power_toughness_summary(obj: dict | None) -> str | None:
+    """Return a creature's current power/toughness as X/Y when Arena exposes both values."""
+    if not obj or "CardType_Creature" not in set(obj.get("cardTypes") or []):
+        return None
+    power = arena_value_int(obj.get("power"))
+    toughness = arena_value_int(obj.get("toughness"))
+    if power is None or toughness is None:
+        return None
+    return f"{power}/{toughness}"
+
+
+def token_board_name(name: str, obj: dict | None) -> str:
+    """Prefix token permanent names with Token so board snapshots distinguish tokens from cards."""
+    if not obj or obj.get("type") != "GameObjectType_Token" or name.startswith("Token "):
+        return name
+    return f"Token {name}"
+
+
 def phrase_player_counter_change(label: str, counter_name: str, amount: int, total: int) -> str:
     """Render poison, energy, or experience counter changes on a player."""
     verb = "get" if amount > 0 else "lose"
@@ -2735,8 +2760,8 @@ def extract_game_plays(
         subtypes = obj.get("subtypes") or []
         if subtypes:
             subtype = str(subtypes[0]).removeprefix("SubType_")
-            return f"{subtype} token"
-        return "token"
+            return f"Token {subtype}"
+        return "Token"
 
     def object_label_from_object(obj):
         """Return the best readable label available directly on a game object."""
@@ -3141,7 +3166,12 @@ def extract_game_plays(
         if base == "unknown card":
             return base
         obj = objects.get(instance_id, {})
-        modifier_parts = counter_summary_parts(object_counters[instance_id], counter_type_names)
+        base = token_board_name(base, obj)
+        modifier_parts = []
+        power_toughness = power_toughness_summary(obj)
+        if power_toughness:
+            modifier_parts.append(power_toughness)
+        modifier_parts.extend(counter_summary_parts(object_counters[instance_id], counter_type_names))
         modifier_parts.extend(attachment_summary_parts(attachments_for_permanent(instance_id)))
         controller = obj.get("controllerSeatId")
         owner = obj.get("ownerSeatId")

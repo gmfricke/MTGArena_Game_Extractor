@@ -44,6 +44,7 @@ from mtga_extract_games import (
     ownership_summary_part,
     parse_carddb_int_list,
     phase_section_label,
+    power_toughness_summary,
     player_log_paths_for_reading,
     phrase_commander_cast_note,
     phrase_commander_damage,
@@ -95,6 +96,7 @@ from mtga_extract_games import (
     state_player_label,
     state_zone_label,
     subject_pronoun,
+    token_board_name,
     colorize_land_names,
     should_color_output,
     transcript_line_perspective,
@@ -1113,6 +1115,34 @@ class WordingTests(unittest.TestCase):
             " (+2/+2 from counters; counter 7)",
         )
         self.assertEqual(scaled_power_toughness_counter("+1/+1", 38), "+38/+38")
+
+    def test_board_token_and_power_toughness_wording(self):
+        """Check board token labels and current power/toughness summaries."""
+        token = {
+            "type": "GameObjectType_Token",
+            "cardTypes": ["CardType_Creature"],
+            "power": {"value": 5},
+            "toughness": {"value": 5},
+        }
+        card = {
+            "type": "GameObjectType_Card",
+            "cardTypes": ["CardType_Creature"],
+            "power": {"value": 2},
+            "toughness": {"value": 1},
+        }
+        land = {
+            "type": "GameObjectType_Card",
+            "cardTypes": ["CardType_Land"],
+            "power": {"value": 2},
+            "toughness": {"value": 2},
+        }
+
+        self.assertEqual(token_board_name("Angel", token), "Token Angel")
+        self.assertEqual(token_board_name("Token Angel", token), "Token Angel")
+        self.assertEqual(token_board_name("Speaker of the Heavens", card), "Speaker of the Heavens")
+        self.assertEqual(power_toughness_summary(token), "5/5")
+        self.assertEqual(power_toughness_summary(card), "2/1")
+        self.assertIsNone(power_toughness_summary(land))
 
     def test_attachment_summary_wording(self):
         """Check attachment summary wording."""

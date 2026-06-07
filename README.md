@@ -308,7 +308,7 @@ My hand: Archangel of Thune; Banishing Light; Plains; Stroke of Midnight
 My board:
   Lands: Untapped: Plains; Tapped: Plains
   Artifacts/Enchantments: Untapped: Authority of the Consuls
-  Creatures: Untapped: Esper Sentinel (summoning sick)
+  Creatures: Untapped: Esper Sentinel (1/1) (summoning sick)
   Library: 91 cards
   Command: Giada, Font of Hope
 Opponent's hand: 7 unknown cards
@@ -326,7 +326,7 @@ My hand: Archangel of Thune; Banishing Light; Plains; Stroke of Midnight
 My board:
   Lands: Untapped: 2x Plains
   Artifacts/Enchantments: Untapped: Authority of the Consuls
-  Creatures: Untapped: Esper Sentinel
+  Creatures: Untapped: Esper Sentinel (1/1)
   Library: 91 cards
   Command: Giada, Font of Hope
 Opponent's hand: 7 unknown cards
@@ -356,12 +356,12 @@ My hand: Archangel of Thune; Banishing Light; Stroke of Midnight; Tyrite Sanctum
 My board:
   Lands: Untapped: Plains; Tapped: 2x Plains
   Artifacts/Enchantments: Untapped: Authority of the Consuls
-  Creatures: Untapped: Giada, Font of Hope (summoning sick); Tapped: Esper Sentinel
+  Creatures: Untapped: Giada, Font of Hope (2/2) (summoning sick); Tapped: Esper Sentinel (1/1)
   Library: 90 cards
 Opponent's hand: 6 unknown cards
 Opponent's board:
   Lands: Untapped: Command Tower; Plains
-  Creatures: Untapped: Cathar Commando
+  Creatures: Untapped: Cathar Commando (3/1)
   Library: 90 cards
   Command: Errant and Giada
 
@@ -387,12 +387,12 @@ My hand: Archangel of Thune; Banishing Light; Stroke of Midnight; Tyrite Sanctum
 My board:
   Lands: Untapped: 3x Plains
   Artifacts/Enchantments: Untapped: Authority of the Consuls
-  Creatures: Untapped: Esper Sentinel; Giada, Font of Hope
+  Creatures: Untapped: Esper Sentinel (1/1); Giada, Font of Hope (2/2)
   Library: 90 cards
 Opponent's hand: 6 unknown cards
 Opponent's board:
   Lands: Tapped: Command Tower; Plains
-  Creatures: Tapped: Cathar Commando; Skycat Sovereign (summoning sick)
+  Creatures: Tapped: Cathar Commando (3/1); Skycat Sovereign (1/1) (summoning sick)
   Library: 89 cards
   Command: Errant and Giada
 
@@ -406,12 +406,12 @@ My hand: Banishing Light; Bonders' Enclave; Stroke of Midnight
 My board:
   Lands: Tapped: 3x Plains; Tyrite Sanctum
   Artifacts/Enchantments: Untapped: Authority of the Consuls
-  Creatures: Untapped: Archangel of Thune (+1/+1 from counters) (summoning sick); Esper Sentinel; Tapped: Giada, Font of Hope
+  Creatures: Untapped: Archangel of Thune (4/5; +1/+1 from counters) (summoning sick); Esper Sentinel (1/1); Tapped: Giada, Font of Hope (2/2)
   Library: 89 cards
 Opponent's hand: 6 unknown cards
 Opponent's board:
   Lands: Untapped: Command Tower; Plains
-  Creatures: Untapped: Cathar Commando; Skycat Sovereign
+  Creatures: Untapped: Cathar Commando (3/1); Skycat Sovereign (1/1)
   Library: 89 cards
   Command: Errant and Giada
 
@@ -424,13 +424,13 @@ My hand: Banishing Light; Bonders' Enclave; Stroke of Midnight
 My board:
   Lands: Untapped: 3x Plains; Tyrite Sanctum
   Artifacts/Enchantments: Untapped: Authority of the Consuls
-  Creatures: Untapped: Archangel of Thune (+1/+1 from counters); Esper Sentinel; Giada, Font of Hope
+  Creatures: Untapped: Archangel of Thune (4/5; +1/+1 from counters); Esper Sentinel (1/1); Giada, Font of Hope (2/2)
   Library: 89 cards
 Opponent's hand: 6 unknown cards
 Opponent's board:
   Lands: Tapped: Command Tower; Plains
   Artifacts/Enchantments: Untapped: Wayfarer's Bauble
-  Creatures: Untapped: Cathar Commando; Skycat Sovereign
+  Creatures: Untapped: Cathar Commando (3/1); Skycat Sovereign (1/1)
   Library: 88 cards
   Command: Errant and Giada
 
@@ -454,13 +454,13 @@ My hand: Bonders' Enclave; Stroke of Midnight
 My board:
   Lands: Untapped: 2x Plains; Tapped: 2x Plains; Tyrite Sanctum
   Artifacts/Enchantments: Untapped: Authority of the Consuls; Banishing Light
-  Creatures: Untapped: Esper Sentinel (+1/+1 from counters); Giada, Font of Hope (+1/+1 from counters); Tapped: Archangel of Thune (+2/+2 from counters)
+  Creatures: Untapped: Esper Sentinel (2/2; +1/+1 from counters); Giada, Font of Hope (3/3; +1/+1 from counters); Tapped: Archangel of Thune (5/6; +2/+2 from counters)
   Library: 88 cards
 Opponent's hand: 6 unknown cards
 Opponent's board:
   Lands: Untapped: Command Tower; Plains
   Artifacts/Enchantments: Untapped: Wayfarer's Bauble
-  Creatures: Untapped: Skycat Sovereign
+  Creatures: Untapped: Skycat Sovereign (1/1)
   Library: 88 cards
   Command: Errant and Giada
   Exile: Cathar Commando
@@ -479,12 +479,12 @@ My hand: Bonders' Enclave; Stroke of Midnight
 My board:
   Lands: Untapped: 4x Plains; Tyrite Sanctum
   Artifacts/Enchantments: Untapped: Authority of the Consuls; Banishing Light
-  Creatures: Untapped: Archangel of Thune (+2/+2 from counters); Esper Sentinel (+1/+1 from counters); Giada, Font of Hope (+1/+1 from counters)
+  Creatures: Untapped: Archangel of Thune (5/6; +2/+2 from counters); Esper Sentinel (2/2; +1/+1 from counters); Giada, Font of Hope (3/3; +1/+1 from counters)
   Library: 88 cards
 Opponent's hand: 6 unknown cards
 Opponent's board:
   Lands: Tapped: Command Tower; Glacial Floodplain; Island; Plains
-  Creatures: Untapped: Skycat Sovereign
+  Creatures: Untapped: Skycat Sovereign (1/1)
   Library: 86 cards
   Command: Errant and Giada
   Graveyard: Wayfarer's Bauble
@@ -518,7 +518,7 @@ My hand: Celestial Vault; Stroke of Midnight
 My board:
   Lands: Untapped: 3x Plains; Tapped: Bonders' Enclave; Plains; Tyrite Sanctum
   Artifacts/Enchantments: Untapped: Authority of the Consuls; Banishing Light
-  Creatures: Untapped: Giada, Font of Hope (+3/+3 from counters); Tapped: Archangel of Thune (+3/+3 from counters); Esper Sentinel (+2/+2 from counters)
+  Creatures: Untapped: Giada, Font of Hope (5/5; +3/+3 from counters); Tapped: Archangel of Thune (6/7; +3/+3 from counters); Esper Sentinel (3/3; +2/+2 from counters)
   Library: 87 cards
 Opponent's hand: 6 unknown cards
 Opponent's board:
