@@ -71,7 +71,7 @@ The examples below are for macOS because I wrote the code on a Mac laptop. I'll 
 Usually you can just run:
 
 ```bash
-python3 mtga_extract_games.py --last 1 --no-resolves
+python3 mtga_extract_games.py --last 1
 ```
 
 The program will look in the normal macOS locations for `Player.log` and the newest `Raw_CardDatabase_*.mtga` file. It reads macOS `UTC_Log` archives first when they are available, then `Player-prev.log`, then `Player.log`, and de-duplicates overlapping games by match ID. Parsed games are saved to `./mtga_seen_games.sqlite3` by default, and normal transcript output is selected from that database. If it cannot find the needed paths, it will tell you what paths to set.
@@ -86,37 +86,37 @@ CARDDB="$HOME/Library/Application Support/com.wizards.mtga/Downloads/Raw/Raw_Car
 Then run:
 
 ```bash
-python3 mtga_extract_games.py --last 1 --no-resolves
+python3 mtga_extract_games.py --last 1
 ```
 
 Save the last two games to a file:
 
 ```bash
-python3 mtga_extract_games.py --last 2 --no-resolves > mtga_transcript.txt
+python3 mtga_extract_games.py --last 2 > mtga_transcript.txt
 ```
 
 Show only one game by number:
 
 ```bash
-python3 mtga_extract_games.py --nth-from-start 3 --no-resolves
+python3 mtga_extract_games.py --nth-from-start 3
 ```
 
 Show the next-to-last game:
 
 ```bash
-python3 mtga_extract_games.py --nth-from-end 2 --no-resolves
+python3 mtga_extract_games.py --nth-from-end 2
 ```
 
 Show games 3 through 5:
 
 ```bash
-python3 mtga_extract_games.py --range 3 5 --no-resolves
+python3 mtga_extract_games.py --range 3 5
 ```
 
 Show the current game from its start and then keep watching while Arena is running:
 
 ```bash
-python3 mtga_extract_games.py --live --no-resolves
+python3 mtga_extract_games.py --live
 ```
 
 Live mode records each completed game to the archive as soon as Arena writes a final game result. If you stop live mode before the current game finishes, it prints a warning that the unfinished game was not recorded in the database.
@@ -156,43 +156,45 @@ export CARDDB="$HOME/Library/Application Support/com.wizards.mtga/Downloads/Raw/
 Use this for a short transcript of the most recent game:
 
 ```bash
-python3 mtga_extract_games.py --last 1 --no-resolves --no-turn-state
+python3 mtga_extract_games.py --last 1 --no-turn-state
 ```
 
 Use this for a fuller transcript with board state at the start of each turn:
 
 ```bash
-python3 mtga_extract_games.py --last 1 --no-resolves
+python3 mtga_extract_games.py --last 1
 ```
+
+Routine `resolves` lines are hidden by default. Add `--resolves` when debugging stack ordering or when you want the extra mechanical detail.
 
 Use this for the last three games:
 
 ```bash
-python3 mtga_extract_games.py --last 3 --no-resolves
+python3 mtga_extract_games.py --last 3
 ```
 
 Use this for the first three games in the log:
 
 ```bash
-python3 mtga_extract_games.py --first 3 --no-resolves
+python3 mtga_extract_games.py --first 3
 ```
 
 Use this for every game in the available Arena logs:
 
 ```bash
-python3 mtga_extract_games.py --all --no-resolves
+python3 mtga_extract_games.py --all
 ```
 
 By default, parsed games are saved before output is printed:
 
 ```bash
-python3 mtga_extract_games.py --all --no-resolves
+python3 mtga_extract_games.py --all
 ```
 
 The default archive is `./mtga_seen_games.sqlite3` in the current directory. You can choose a different path:
 
 ```bash
-python3 mtga_extract_games.py --all --no-resolves --archive-db arena_games.sqlite3
+python3 mtga_extract_games.py --all --archive-db arena_games.sqlite3
 ```
 
 The archive keeps stable match identity, game ordering, and transcript text separately. The `matches` table is keyed by Arena match ID, `games` stores one row per game within a match, `transcripts` stores generated plain-text output, and `log_sources` records the log files seen during refreshes. This keeps the database usable for best-of-one and best-of-three matches, and leaves room for future transcript formats or metadata.
@@ -200,13 +202,13 @@ The archive keeps stable match identity, game ordering, and transcript text sepa
 For one-off raw-log debugging without updating or reading from the archive:
 
 ```bash
-python3 mtga_extract_games.py --all --no-resolves --no-archive-db
+python3 mtga_extract_games.py --all --no-archive-db
 ```
 
 Use this to add terminal colours:
 
 ```bash
-python3 mtga_extract_games.py --last 1 --no-resolves --colour always
+python3 mtga_extract_games.py --last 1 --colour always
 ```
 
 The colour mode highlights transcript structure, Me/Opponent lines, results, and known card names. Card names use MTG-style colour accents from the Arena card database when possible. Lands use colour identity, while spells and nonland permanents use printed colours. Multicolour cards use a conservative ANSI blend such as cyan for white-blue, purple for blue-red, and pink/bright magenta for white-red. Colourless cards, artifacts with no printed colour, and neutral list words such as `and` use neutral gray. `--color` is accepted as an alias, but the documented spelling is `--colour`.
@@ -214,7 +216,7 @@ The colour mode highlights transcript structure, Me/Opponent lines, results, and
 Use this to save output to a text file:
 
 ```bash
-python3 mtga_extract_games.py --last 3 --no-resolves > mtga_transcript.txt
+python3 mtga_extract_games.py --last 3 > mtga_transcript.txt
 ```
 
 The most useful options are:
@@ -227,7 +229,7 @@ The most useful options are:
 - `--nth-from-end 2`: show the next-to-last game
 - `--range 3 5`: show games 3 through 5
 - `--live`: show the current game from its start, print new transcript lines as Arena writes them, and archive completed games
-- `--no-resolves`: hide routine "resolves" lines
+- `--resolves`: show routine "resolves" lines, which are hidden by default
 - `--no-turn-state`: hide board and hand snapshots
 - `--no-phases`: hide phase and step headings
 - `--progress`: show a progress bar on stderr while parsing
@@ -248,7 +250,7 @@ The most useful options are:
 This is a representative completed game extracted with normal transcript options such as:
 
 ```bash
-python3 mtga_extract_games.py --last 1 --no-resolves
+python3 mtga_extract_games.py --last 1
 ```
 
 ```text
@@ -258,22 +260,12 @@ Game type: Constructed Brawl (25 starting life)
 === Turn 1: Me ===
 My hand: Archangel of Thune; Authority of the Consuls; Banishing Light; Esper Sentinel; 2x Plains; Stroke of Midnight
 My board:
-  Lands: (empty)
-  Artifacts/Enchantments: (empty)
-  Creatures: (empty)
   Library: 92 cards
   Command: Giada, Font of Hope
-  Graveyard: (empty)
-  Exile: (empty)
 Opponent's hand: 7 unknown cards
 Opponent's board:
-  Lands: (empty)
-  Artifacts/Enchantments: (empty)
-  Creatures: (empty)
   Library: 92 cards
   Command: Errant and Giada
-  Graveyard: (empty)
-  Exile: (empty)
 I play Plains
 I cast Authority of the Consuls
 
@@ -282,20 +274,12 @@ My hand: Archangel of Thune; Banishing Light; Esper Sentinel; Plains; Stroke of 
 My board:
   Lands: Tapped: Plains
   Artifacts/Enchantments: Untapped: Authority of the Consuls
-  Creatures: (empty)
   Library: 92 cards
   Command: Giada, Font of Hope
-  Graveyard: (empty)
-  Exile: (empty)
 Opponent's hand: 7 unknown cards
 Opponent's board:
-  Lands: (empty)
-  Artifacts/Enchantments: (empty)
-  Creatures: (empty)
   Library: 92 cards
   Command: Errant and Giada
-  Graveyard: (empty)
-  Exile: (empty)
 
 -- Beginning - draw --
 Opponent draws a card
@@ -306,20 +290,13 @@ My hand: Archangel of Thune; Banishing Light; Esper Sentinel; Plains; Stroke of 
 My board:
   Lands: Untapped: Plains
   Artifacts/Enchantments: Untapped: Authority of the Consuls
-  Creatures: (empty)
   Library: 92 cards
   Command: Giada, Font of Hope
-  Graveyard: (empty)
-  Exile: (empty)
 Opponent's hand: 7 unknown cards
 Opponent's board:
   Lands: Untapped: Command Tower
-  Artifacts/Enchantments: (empty)
-  Creatures: (empty)
   Library: 91 cards
   Command: Errant and Giada
-  Graveyard: (empty)
-  Exile: (empty)
 
 -- Beginning - draw --
 I draw Plains
@@ -334,17 +311,11 @@ My board:
   Creatures: Untapped: Esper Sentinel (summoning sick)
   Library: 91 cards
   Command: Giada, Font of Hope
-  Graveyard: (empty)
-  Exile: (empty)
 Opponent's hand: 7 unknown cards
 Opponent's board:
   Lands: Untapped: Command Tower
-  Artifacts/Enchantments: (empty)
-  Creatures: (empty)
   Library: 91 cards
   Command: Errant and Giada
-  Graveyard: (empty)
-  Exile: (empty)
 
 -- Beginning - draw --
 Opponent draws a card
@@ -358,17 +329,11 @@ My board:
   Creatures: Untapped: Esper Sentinel
   Library: 91 cards
   Command: Giada, Font of Hope
-  Graveyard: (empty)
-  Exile: (empty)
 Opponent's hand: 7 unknown cards
 Opponent's board:
   Lands: Untapped: Command Tower; Plains
-  Artifacts/Enchantments: (empty)
-  Creatures: (empty)
   Library: 90 cards
   Command: Errant and Giada
-  Graveyard: (empty)
-  Exile: (empty)
 
 -- Beginning - draw --
 I draw Tyrite Sanctum
@@ -393,18 +358,12 @@ My board:
   Artifacts/Enchantments: Untapped: Authority of the Consuls
   Creatures: Untapped: Giada, Font of Hope (summoning sick); Tapped: Esper Sentinel
   Library: 90 cards
-  Command: (empty)
-  Graveyard: (empty)
-  Exile: (empty)
 Opponent's hand: 6 unknown cards
 Opponent's board:
   Lands: Untapped: Command Tower; Plains
-  Artifacts/Enchantments: (empty)
   Creatures: Untapped: Cathar Commando
   Library: 90 cards
   Command: Errant and Giada
-  Graveyard: (empty)
-  Exile: (empty)
 
 -- Beginning - draw --
 Opponent draws a card
@@ -430,18 +389,12 @@ My board:
   Artifacts/Enchantments: Untapped: Authority of the Consuls
   Creatures: Untapped: Esper Sentinel; Giada, Font of Hope
   Library: 90 cards
-  Command: (empty)
-  Graveyard: (empty)
-  Exile: (empty)
 Opponent's hand: 6 unknown cards
 Opponent's board:
   Lands: Tapped: Command Tower; Plains
-  Artifacts/Enchantments: (empty)
   Creatures: Tapped: Cathar Commando; Skycat Sovereign (summoning sick)
   Library: 89 cards
   Command: Errant and Giada
-  Graveyard: (empty)
-  Exile: (empty)
 
 -- Beginning - draw --
 I draw Bonders' Enclave
@@ -455,18 +408,12 @@ My board:
   Artifacts/Enchantments: Untapped: Authority of the Consuls
   Creatures: Untapped: Archangel of Thune (+1/+1 from counters) (summoning sick); Esper Sentinel; Tapped: Giada, Font of Hope
   Library: 89 cards
-  Command: (empty)
-  Graveyard: (empty)
-  Exile: (empty)
 Opponent's hand: 6 unknown cards
 Opponent's board:
   Lands: Untapped: Command Tower; Plains
-  Artifacts/Enchantments: (empty)
   Creatures: Untapped: Cathar Commando; Skycat Sovereign
   Library: 89 cards
   Command: Errant and Giada
-  Graveyard: (empty)
-  Exile: (empty)
 
 -- Beginning - draw --
 Opponent draws a card
@@ -479,9 +426,6 @@ My board:
   Artifacts/Enchantments: Untapped: Authority of the Consuls
   Creatures: Untapped: Archangel of Thune (+1/+1 from counters); Esper Sentinel; Giada, Font of Hope
   Library: 89 cards
-  Command: (empty)
-  Graveyard: (empty)
-  Exile: (empty)
 Opponent's hand: 6 unknown cards
 Opponent's board:
   Lands: Tapped: Command Tower; Plains
@@ -489,8 +433,6 @@ Opponent's board:
   Creatures: Untapped: Cathar Commando; Skycat Sovereign
   Library: 88 cards
   Command: Errant and Giada
-  Graveyard: (empty)
-  Exile: (empty)
 
 -- Beginning - draw --
 I draw Plains
@@ -514,9 +456,6 @@ My board:
   Artifacts/Enchantments: Untapped: Authority of the Consuls; Banishing Light
   Creatures: Untapped: Esper Sentinel (+1/+1 from counters); Giada, Font of Hope (+1/+1 from counters); Tapped: Archangel of Thune (+2/+2 from counters)
   Library: 88 cards
-  Command: (empty)
-  Graveyard: (empty)
-  Exile: (empty)
 Opponent's hand: 6 unknown cards
 Opponent's board:
   Lands: Untapped: Command Tower; Plains
@@ -524,7 +463,6 @@ Opponent's board:
   Creatures: Untapped: Skycat Sovereign
   Library: 88 cards
   Command: Errant and Giada
-  Graveyard: (empty)
   Exile: Cathar Commando
 Current State:
   Giada, Font of Hope has dealt 2 commander damage to Opponent
@@ -543,13 +481,9 @@ My board:
   Artifacts/Enchantments: Untapped: Authority of the Consuls; Banishing Light
   Creatures: Untapped: Archangel of Thune (+2/+2 from counters); Esper Sentinel (+1/+1 from counters); Giada, Font of Hope (+1/+1 from counters)
   Library: 88 cards
-  Command: (empty)
-  Graveyard: (empty)
-  Exile: (empty)
 Opponent's hand: 6 unknown cards
 Opponent's board:
   Lands: Tapped: Command Tower; Glacial Floodplain; Island; Plains
-  Artifacts/Enchantments: (empty)
   Creatures: Untapped: Skycat Sovereign
   Library: 86 cards
   Command: Errant and Giada
@@ -586,14 +520,9 @@ My board:
   Artifacts/Enchantments: Untapped: Authority of the Consuls; Banishing Light
   Creatures: Untapped: Giada, Font of Hope (+3/+3 from counters); Tapped: Archangel of Thune (+3/+3 from counters); Esper Sentinel (+2/+2 from counters)
   Library: 87 cards
-  Command: (empty)
-  Graveyard: (empty)
-  Exile: (empty)
 Opponent's hand: 6 unknown cards
 Opponent's board:
   Lands: Untapped: Command Tower; Glacial Floodplain; Island; Plains
-  Artifacts/Enchantments: (empty)
-  Creatures: (empty)
   Library: 86 cards
   Command: Errant and Giada
   Graveyard: Skycat Sovereign; Wayfarer's Bauble

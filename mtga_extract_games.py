@@ -2185,7 +2185,7 @@ def extract_game_plays(
     nth_from_end: int | None = None,
     game_range: tuple[int, int] | None = None,
     show_progress: bool | None = None,
-    show_resolves: bool = True,
+    show_resolves: bool = False,
     show_turn_state: bool = True,
     show_phases: bool = True,
     live: bool = False,
@@ -3247,7 +3247,9 @@ def extract_game_plays(
             parts.append(f"Untapped: {compact_names(row['untapped'])}")
         if row["tapped"]:
             parts.append(f"Tapped: {compact_names(row['tapped'])}")
-        return f"  {label}: {'; '.join(parts) if parts else '(empty)'}"
+        if not parts:
+            return None
+        return f"  {label}: {'; '.join(parts)}"
 
     def zone_names(zone_type, seat=None):
         """Collect card names from zones such as hand, graveyard, exile."""
@@ -3323,11 +3325,17 @@ def extract_game_plays(
         emit_player_attachments(seat)
         emit(f"  {phrase_library_count('Library', library_count(seat))}")
         if current_game_has_commanders:
-            emit(f"  Command: {compact_names(command_zone_names(seat))}")
-        emit(f"  Graveyard: {compact_names(zone_names('ZoneType_Graveyard', seat))}")
-        emit(f"  Exile: {compact_names(zone_names('ZoneType_Exile', seat))}")
+            emit_optional_zone_line("Command", command_zone_names(seat))
+        emit_optional_zone_line("Graveyard", zone_names("ZoneType_Graveyard", seat))
+        emit_optional_zone_line("Exile", zone_names("ZoneType_Exile", seat))
         for line in available_resource_lines(available_resources_for_seat(seat)):
             emit(f"  {line}")
+
+    def emit_optional_zone_line(label, names):
+        """Print a labelled zone row only when the zone has visible contents."""
+        compacted = compact_names(names)
+        if compacted != "(empty)":
+            emit(f"  {label}: {compacted}")
 
     def emit_player_attachments(seat):
         """Print attachments such as Curses that are attached directly to a player."""
@@ -3338,9 +3346,14 @@ def extract_game_plays(
     def emit_board_rows(seat):
         """Print board rows in the requested land/noncreature/creature order."""
         rows = battlefield_rows(seat)
-        emit(board_row_line("Lands", rows["lands"]))
-        emit(board_row_line("Artifacts/Enchantments", rows["artifacts_enchantments"]))
-        emit(board_row_line("Creatures", rows["creatures"]))
+        for label, row in (
+            ("Lands", rows["lands"]),
+            ("Artifacts/Enchantments", rows["artifacts_enchantments"]),
+            ("Creatures", rows["creatures"]),
+        ):
+            line = board_row_line(label, row)
+            if line:
+                emit(line)
         if rows["other"]["untapped"] or rows["other"]["tapped"]:
             emit(board_row_line("Other", rows["other"]))
 
@@ -4976,28 +4989,28 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""examples:
   Print the most recent game:
-    python3 mtga_extract_games.py --last 1 --no-resolves
+    python3 mtga_extract_games.py --last 1
 
   Print every game in Player.log:
-    python3 mtga_extract_games.py --all --no-resolves
+    python3 mtga_extract_games.py --all
 
   Save the last three games to a text file:
-    python3 mtga_extract_games.py --last 3 --no-resolves > mtga_transcript.txt
+    python3 mtga_extract_games.py --last 3 > mtga_transcript.txt
 
   Print only game 4 from the log:
-    python3 mtga_extract_games.py --nth-from-start 4 --no-resolves
+    python3 mtga_extract_games.py --nth-from-start 4
 
   Print the next-to-last game:
-    python3 mtga_extract_games.py --nth-from-end 2 --no-resolves
+    python3 mtga_extract_games.py --nth-from-end 2
 
   Print games 3 through 5:
-    python3 mtga_extract_games.py --range 3 5 --no-resolves
+    python3 mtga_extract_games.py --range 3 5
 
   Debug where Arena records a card's choices:
     python3 mtga_extract_games.py --last 1 --debug-card "Serra's Emissary"
 
   Watch for new games as Arena writes Player.log:
-    python3 mtga_extract_games.py --live --no-resolves
+    python3 mtga_extract_games.py --live
 
   Highlight my lines and opponent lines in a terminal:
     python3 mtga_extract_games.py --last 1 --colour always
@@ -5110,9 +5123,11 @@ No pip install step is required; this script only uses Python's standard library
         help="suppress the progress bar",
     )
     parser.add_argument(
-        "--no-resolves",
+        "--resolves",
+        dest="show_resolves",
         action="store_true",
-        help="hide 'resolves' transcript lines for shorter output",
+        default=False,
+        help="show routine 'resolves' transcript lines",
     )
     parser.add_argument(
         "--no-turn-state",
@@ -5229,7 +5244,7 @@ No pip install step is required; this script only uses Python's standard library
         nth_from_end=args.nth_from_end,
         game_range=tuple(args.range) if args.range is not None else None,
         show_progress=False if args.live else True if args.progress else False if args.no_progress else None,
-        show_resolves=not args.no_resolves,
+        show_resolves=args.show_resolves,
         show_turn_state=not args.no_turn_state,
         show_phases=not args.no_phases,
         live=args.live,
