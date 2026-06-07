@@ -371,9 +371,6 @@ Opponent draws a card
 -- Combat - attackers --
 Opponent attacks me with Cathar Commando
 
--- Combat - blockers --
-Giada, Font of Hope blocks Cathar Commando
-
 -- Combat - damage --
 Cathar Commando deals 3 damage to me
 I lose 3 life (23)

@@ -4002,7 +4002,7 @@ def extract_game_plays(
                         )
                     )
 
-            if obj.get("blockState") in {"BlockState_Declared", "BlockState_Blocking"}:
+            if obj.get("blockState") == "BlockState_Blocking":
                 attacker_ids = (obj.get("blockInfo") or {}).get("attackerIds") or []
                 for attacker_id in attacker_ids:
                     key = (current_match, current_turn, "block", iid, attacker_id)
@@ -4370,6 +4370,21 @@ def extract_game_plays(
         flush_pending_event_groups()
         emit(f"{source} replacement effect applies{suffix}")
 
+    def clear_stale_block_state(gsm):
+        """Clear cached block-only fields before applying final combat-step diffs."""
+        turn_info = gsm.get("turnInfo") or {}
+        if turn_info.get("phase") != "Phase_Combat":
+            return
+        if turn_info.get("step") not in {
+            "Step_DeclareBlock",
+            "Step_CombatDamage",
+            "Step_EndCombat",
+        }:
+            return
+        for obj in objects.values():
+            obj.pop("blockState", None)
+            obj.pop("blockInfo", None)
+
     def update_state(gsm):
         """Merge a full/diff game-state message into the local state model."""
         for team in gsm.get("teams", []):
@@ -4380,6 +4395,8 @@ def extract_game_plays(
         for zone in gsm.get("zones", []):
             if zone.get("zoneId") is not None:
                 zones[zone["zoneId"]] = zone
+
+        clear_stale_block_state(gsm)
 
         for obj in gsm.get("gameObjects", []):
             if obj.get("instanceId") is not None:
