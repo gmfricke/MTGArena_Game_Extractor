@@ -29,16 +29,22 @@ from mtga_extract_games import (
     combine_duplicate_transcript_lines,
     combine_repeated_damage_life_sequences,
     compact_counted_name,
+    candidate_windows_paths,
     counter_summary_suffix,
     copied_object_label,
     death_label_or_none,
     damage_mark_suffix,
     default_archive_db_path,
+    find_card_database,
     is_hidden_arena_object,
+    find_player_logs,
     load_ability_texts,
     load_enum_value_names,
     load_grp_id_to_metadata,
+    land_mana_options,
     life_change_group_source,
+    mana_options_from_ability_texts,
+    mana_restriction_from_ability_texts,
     move_copy_resolves_after_revealed_returns,
     object_pronoun,
     ownership_summary_part,
@@ -74,6 +80,9 @@ from mtga_extract_games import (
     phrase_source_action,
     phrase_zone_change,
     find_target_like_paths,
+    format_available_mana_summary,
+    format_mana_pool,
+    format_path_diagnostics,
     format_game_type,
     format_target_phrase,
     game_has_commanders,
@@ -723,6 +732,196 @@ class WordingTests(unittest.TestCase):
             self.assertIn("Using logs:", warning)
             self.assertIn(str(player_log), warning)
 
+    def test_macos_discovery_finds_standard_paths(self):
+        """Check macOS discovery finds standard Arena paths."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir)
+            player_log = home / "Library" / "Logs" / "Wizards Of The Coast" / "MTGA" / "Player.log"
+            raw_dir = home / "Library" / "Application Support" / "com.wizards.mtga" / "Downloads" / "Raw"
+            carddb = raw_dir / "Raw_CardDatabase_mac.mtga"
+            player_log.parent.mkdir(parents=True)
+            raw_dir.mkdir(parents=True)
+            player_log.write_text("", encoding="utf-8")
+            carddb.write_text("", encoding="utf-8")
+
+            with patch.dict("os.environ", {"HOME": str(home), "USERPROFILE": str(home)}, clear=False):
+                logs = find_player_logs("darwin")
+                resolved_carddb = find_card_database("darwin")
+
+            self.assertEqual(logs, [player_log])
+            self.assertEqual(resolved_carddb, carddb)
+
+    def test_windows_discovery_finds_player_log_and_previous_log(self):
+        """Check Windows discovery finds Player.log and Player-prev.log."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            user = root / "Users" / "Alice"
+            local_appdata = user / "AppData" / "Local"
+            log_dir = user / "AppData" / "LocalLow" / "Wizards Of The Coast" / "MTGA"
+            player_log = log_dir / "Player.log"
+            previous_log = log_dir / "Player-prev.log"
+            log_dir.mkdir(parents=True)
+            player_log.write_text("", encoding="utf-8")
+            previous_log.write_text("", encoding="utf-8")
+            env = {
+                "LOCALAPPDATA": str(local_appdata),
+                "APPDATA": str(user / "AppData" / "Roaming"),
+                "USERPROFILE": str(user),
+            }
+
+            paths = candidate_windows_paths(env)
+            logs = find_player_logs("win32", env)
+
+            self.assertIn(player_log, paths["player_logs"])
+            self.assertIn(previous_log, paths["player_logs"])
+            self.assertIn(player_log, logs)
+            self.assertIn(previous_log, logs)
+
+    def test_windows_carddb_discovery_prefers_newest_known_install_root(self):
+        """Check Windows card database discovery chooses newest known-root match."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            program_files = root / "Program Files"
+            raw_dir = (
+                program_files
+                / "Wizards of the Coast"
+                / "MTGA"
+                / "MTGA_Data"
+                / "Downloads"
+                / "Raw"
+            )
+            raw_dir.mkdir(parents=True)
+            older = raw_dir / "Raw_CardDatabase_older.mtga"
+            newer = raw_dir / "Raw_CardDatabase_newer.mtga"
+            older.write_text("", encoding="utf-8")
+            newer.write_text("", encoding="utf-8")
+            os.utime(older, (100, 100))
+            os.utime(newer, (200, 200))
+            env = {
+                "ProgramFiles": str(program_files),
+                "ProgramFiles(x86)": str(root / "Program Files (x86)"),
+                "LOCALAPPDATA": str(root / "Users" / "Alice" / "AppData" / "Local"),
+            }
+
+            self.assertEqual(find_card_database("win32", env), newer)
+
+    def test_carddb_discovery_falls_back_to_recursive_windows_search(self):
+        """Check Windows card database discovery falls back to recursive roots."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            local_appdata = root / "Users" / "Alice" / "AppData" / "Local"
+            raw_dir = local_appdata / "MTGA" / "Nested" / "Downloads" / "Raw"
+            carddb = raw_dir / "Raw_CardDatabase_recursive.mtga"
+            raw_dir.mkdir(parents=True)
+            carddb.write_text("", encoding="utf-8")
+            env = {"LOCALAPPDATA": str(local_appdata)}
+
+            self.assertEqual(find_card_database("win32", env), carddb)
+
+    def test_path_resolution_environment_overrides_autodiscovery(self):
+        """Check explicit environment paths override autodiscovery."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            env_log = root / "override" / "Player.log"
+            env_carddb = root / "override" / "Raw_CardDatabase_override.mtga"
+            auto_log = root / "Users" / "Alice" / "AppData" / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
+            auto_carddb = (
+                root
+                / "Program Files"
+                / "Wizards of the Coast"
+                / "MTGA"
+                / "MTGA_Data"
+                / "Downloads"
+                / "Raw"
+                / "Raw_CardDatabase_auto.mtga"
+            )
+            env_log.parent.mkdir(parents=True)
+            env_carddb.parent.mkdir(parents=True, exist_ok=True)
+            auto_log.parent.mkdir(parents=True)
+            auto_carddb.parent.mkdir(parents=True)
+            env_log.write_text("", encoding="utf-8")
+            env_carddb.write_text("", encoding="utf-8")
+            auto_log.write_text("", encoding="utf-8")
+            auto_carddb.write_text("", encoding="utf-8")
+            env = {
+                "LOG": str(env_log),
+                "CARDDB": str(env_carddb),
+                "USERPROFILE": str(root / "Users" / "Alice"),
+                "LOCALAPPDATA": str(root / "Users" / "Alice" / "AppData" / "Local"),
+                "ProgramFiles": str(root / "Program Files"),
+            }
+
+            resolved_log, resolved_carddb, _warning = resolve_input_paths(
+                None,
+                None,
+                platform_name="win32",
+                env=env,
+            )
+
+            self.assertEqual(resolved_log, env_log)
+            self.assertEqual(resolved_carddb, env_carddb)
+
+    def test_missing_path_error_distinguishes_both_missing(self):
+        """Check missing path error distinguishes both missing inputs."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            env = {
+                "USERPROFILE": str(root / "Users" / "Alice"),
+                "LOCALAPPDATA": str(root / "Users" / "Alice" / "AppData" / "Local"),
+                "ProgramFiles": str(root / "Program Files"),
+            }
+
+            with self.assertRaises(FileNotFoundError) as context:
+                resolve_input_paths(None, None, platform_name="win32", env=env)
+
+            message = str(context.exception)
+            self.assertIn("Could not find Player.log and Raw_CardDatabase_*.mtga", message)
+            self.assertIn("Player log paths checked:", message)
+            self.assertIn("Card database paths checked:", message)
+
+    def test_find_paths_diagnostics_reports_selected_paths(self):
+        """Check path diagnostics report checked and selected paths."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            user = root / "Users" / "Alice"
+            player_log = user / "AppData" / "LocalLow" / "Wizards Of The Coast" / "MTGA" / "Player.log"
+            carddb = (
+                root
+                / "Program Files"
+                / "Wizards of the Coast"
+                / "MTGA"
+                / "MTGA_Data"
+                / "Downloads"
+                / "Raw"
+                / "Raw_CardDatabase_diag.mtga"
+            )
+            player_log.parent.mkdir(parents=True)
+            carddb.parent.mkdir(parents=True)
+            player_log.write_text("", encoding="utf-8")
+            carddb.write_text("", encoding="utf-8")
+            env = {
+                "USERPROFILE": str(user),
+                "LOCALAPPDATA": str(user / "AppData" / "Local"),
+                "ProgramFiles": str(root / "Program Files"),
+            }
+
+            diagnostics = format_path_diagnostics(
+                {
+                    "os": "Windows",
+                    "env": env,
+                    "player_log": player_log,
+                    "player_source": "autodiscovery",
+                    "player_checked": [player_log],
+                    "carddb": carddb,
+                    "carddb_source": "autodiscovery",
+                    "carddb_checked": [carddb.parent, carddb],
+                }
+            )
+
+            self.assertIn("Operating system detected: Windows", diagnostics)
+            self.assertIn(f"Selected player log: {player_log}", diagnostics)
+            self.assertIn(f"Selected card database: {carddb}", diagnostics)
+
     def test_live_path_warning_only_lists_current_log(self):
         """Check live path warning only lists current log."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1068,6 +1267,51 @@ class WordingTests(unittest.TestCase):
                 "  Other playable cards:",
                 "    Faithless Looting [flashback from graveyard, cost not checked]",
             ],
+        )
+
+    def test_mana_summary_helpers(self):
+        """Check mana availability and floating mana helpers."""
+        self.assertEqual(land_mana_options("Wooded Foothills"), set())
+        self.assertEqual(land_mana_options("Battlefield Forge"), {1, 4})
+        metadata = {
+            "ability_texts": [
+                "{oT}: Add {oG}. Spend this mana only to activate abilities.",
+            ],
+        }
+        self.assertEqual(mana_options_from_ability_texts(metadata), {5})
+        self.assertEqual(mana_restriction_from_ability_texts(metadata), "abilities only")
+        self.assertEqual(
+            format_available_mana_summary(3, [{1}, {2, 5}, {6}], 1),
+            "Available mana: 3 total (colors: W/U/G; 1 colorless-only; 1 unknown/flexible)",
+        )
+        self.assertEqual(
+            format_available_mana_summary(
+                2,
+                [{1}, {4}],
+                restricted=["Cavern of Souls 1 W/U/B/R/G [creatures only]"],
+            ),
+            "Available mana: 2 general (colors: W/R; restricted: Cavern of Souls 1 W/U/B/R/G [creatures only])",
+        )
+        self.assertEqual(
+            format_mana_pool(
+                [
+                    {"color": "ManaColor_Black", "count": 2},
+                    {"color": "ManaColor_Green", "count": 1},
+                ],
+            ),
+            "Floating mana: 2 B; 1 G",
+        )
+        self.assertEqual(
+            format_available_mana_summary(1, [{6}], restricted=[]),
+            "Available mana: 1 total (1 colorless-only)",
+        )
+        self.assertEqual(
+            format_available_mana_summary(
+                0,
+                [],
+                restricted=["Giada, Font of Hope 1 W [restricted spells only]"],
+            ),
+            "Available mana: restricted only (restricted: Giada, Font of Hope 1 W [restricted spells only])",
         )
 
     def test_commander_wording(self):

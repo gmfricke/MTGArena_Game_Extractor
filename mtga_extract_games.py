@@ -330,21 +330,56 @@ def load_enum_value_names(carddb_path: Path, enum_type: str) -> dict[int, str]:
     return mapping
 
 
+WINDOWS_ENV_VARS = ("LOCALAPPDATA", "APPDATA", "USERPROFILE", "ProgramFiles", "ProgramFiles(x86)")
+
+
+def path_exists(path: Path) -> bool:
+    """Return whether a path exists, treating inaccessible candidates as missing."""
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def path_mtime(path: Path) -> float:
+    """Return a path mtime, treating inaccessible candidates as oldest."""
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def safe_glob(path: Path, pattern: str) -> list[Path]:
+    """Return glob matches, treating inaccessible directories as empty."""
+    try:
+        return list(path.glob(pattern))
+    except OSError:
+        return []
+
+
+def safe_rglob(path: Path, pattern: str) -> list[Path]:
+    """Return recursive glob matches, treating inaccessible directories as empty."""
+    try:
+        return list(path.rglob(pattern))
+    except OSError:
+        return []
+
+
 def first_existing_path(candidates: list[Path]) -> Path | None:
     """Return the first candidate path that exists on this machine."""
     for candidate in candidates:
         expanded = candidate.expanduser()
-        if expanded.exists():
+        if path_exists(expanded):
             return expanded
     return None
 
 
 def newest_existing_path(candidates: list[Path]) -> Path | None:
     """Return the newest existing path from a candidate list."""
-    existing = [candidate.expanduser() for candidate in candidates if candidate.expanduser().exists()]
+    existing = [candidate.expanduser() for candidate in candidates if path_exists(candidate.expanduser())]
     if not existing:
         return None
-    return max(existing, key=lambda path: path.stat().st_mtime)
+    return max(existing, key=path_mtime)
 
 
 def env_path(names: list[str]) -> Path | None:
@@ -356,14 +391,216 @@ def env_path(names: list[str]) -> Path | None:
     return None
 
 
-def likely_player_log_path() -> Path | None:
-    """Find MTG Arena's Player.log in common local locations."""
-    return first_existing_path(
-        [
+def env_path_from_names(env: dict[str, str], names: list[str]) -> Path | None:
+    """Read the first non-empty environment variable from a mapping."""
+    for name in names:
+        value = env.get(name)
+        if value:
+            return Path(value).expanduser()
+    return None
+
+
+def env_path_from(env: dict[str, str], name: str) -> Path | None:
+    """Read one non-empty environment variable as a Path."""
+    value = env.get(name)
+    if not value:
+        return None
+    return Path(value).expanduser()
+
+
+def operating_system_name(platform_name: str | None = None) -> str:
+    """Return a compact operating system label for path discovery."""
+    platform_name = platform_name or sys.platform
+    if platform_name.startswith("win"):
+        return "Windows"
+    if platform_name == "darwin":
+        return "macOS"
+    return platform_name
+
+
+def candidate_windows_paths(env: dict[str, str] | None = None) -> dict[str, list[Path]]:
+    """Build Windows MTG Arena path candidates from standard environment variables."""
+    env = env or os.environ
+    local_appdata = env_path_from(env, "LOCALAPPDATA")
+    appdata = env_path_from(env, "APPDATA")
+    userprofile = env_path_from(env, "USERPROFILE")
+    program_files = env_path_from(env, "ProgramFiles")
+    program_files_x86 = env_path_from(env, "ProgramFiles(x86)")
+
+    player_dirs = []
+    if local_appdata:
+        player_dirs.append(local_appdata.parent / "LocalLow" / "Wizards Of The Coast" / "MTGA")
+    if appdata:
+        player_dirs.append(appdata.parent / "LocalLow" / "Wizards Of The Coast" / "MTGA")
+    if userprofile:
+        player_dirs.append(
+            userprofile / "AppData" / "LocalLow" / "Wizards Of The Coast" / "MTGA"
+        )
+
+    install_roots = []
+    for root in (program_files, program_files_x86):
+        if root:
+            install_roots.extend(
+                [
+                    root / "Wizards of the Coast" / "MTGA",
+                    root / "Wizards Of The Coast" / "MTGA",
+                    root / "MTGA",
+                ]
+            )
+    if local_appdata:
+        install_roots.extend(
+            [
+                local_appdata / "Programs" / "Wizards of the Coast" / "MTGA",
+                local_appdata / "Programs" / "Wizards Of The Coast" / "MTGA",
+                local_appdata / "MTGA",
+                local_appdata
+                / "Packages"
+                / "WizardsOfTheCoast.MTGA_8wekyb3d8bbwe"
+                / "LocalCache"
+                / "Local"
+                / "Temp"
+                / "Wizards Of The Coast"
+                / "MTGA",
+            ]
+        )
+
+    known_raw_dirs = []
+    for root in install_roots:
+        known_raw_dirs.append(root / "MTGA_Data" / "Downloads" / "Raw")
+        known_raw_dirs.append(root / "Downloads" / "Raw")
+
+    fallback_roots = []
+    for root in install_roots:
+        if root not in fallback_roots:
+            fallback_roots.append(root)
+    if local_appdata and local_appdata not in fallback_roots:
+        fallback_roots.append(local_appdata)
+
+    player_logs = []
+    for player_dir in player_dirs:
+        player_logs.append(player_dir / "Player.log")
+        player_logs.append(player_dir / "Player-prev.log")
+
+    return {
+        "player_logs": dedupe_paths(player_logs),
+        "carddb_known_dirs": dedupe_paths(known_raw_dirs),
+        "carddb_recursive_roots": dedupe_paths(fallback_roots),
+    }
+
+
+def candidate_macos_paths() -> dict[str, list[Path]]:
+    """Build macOS MTG Arena path candidates."""
+    raw_dir = Path("~/Library/Application Support/com.wizards.mtga/Downloads/Raw")
+    return {
+        "player_logs": [
             Path("~/Library/Logs/Wizards Of The Coast/MTGA/Player.log"),
             Path("~/Library/Application Support/com.wizards.mtga/Logs/Player.log"),
-        ]
+        ],
+        "carddb_known_dirs": [raw_dir],
+        "carddb_recursive_roots": [],
+    }
+
+
+def dedupe_paths(paths: list[Path]) -> list[Path]:
+    """Remove repeated path candidates while preserving order."""
+    unique = []
+    seen = set()
+    for path in paths:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
+def record_checked_path(checked_paths: list[Path] | None, path: Path) -> None:
+    """Append a path to diagnostics if diagnostics are being collected."""
+    if checked_paths is not None:
+        checked_paths.append(path.expanduser())
+
+
+def newest_carddb_in_dir(raw_dir: Path, checked_paths: list[Path] | None = None) -> Path | None:
+    """Return newest Raw_CardDatabase_*.mtga in one raw directory."""
+    expanded = raw_dir.expanduser()
+    record_checked_path(checked_paths, expanded)
+    if not path_exists(expanded):
+        return None
+    candidates = safe_glob(expanded, "Raw_CardDatabase_*.mtga")
+    if checked_paths is not None:
+        checked_paths.extend(candidates)
+    return newest_existing_path(candidates)
+
+
+def newest_carddb_under_root(root: Path, checked_paths: list[Path] | None = None) -> Path | None:
+    """Return newest Raw_CardDatabase_*.mtga below one recursive search root."""
+    expanded = root.expanduser()
+    record_checked_path(checked_paths, expanded)
+    if not path_exists(expanded):
+        return None
+    candidates = safe_rglob(expanded, "Raw_CardDatabase_*.mtga")
+    if checked_paths is not None:
+        checked_paths.extend(candidates)
+    return newest_existing_path(candidates)
+
+
+def find_player_logs(
+    platform_name: str | None = None,
+    env: dict[str, str] | None = None,
+    checked_paths: list[Path] | None = None,
+) -> list[Path]:
+    """Find existing MTG Arena Player logs for the current platform."""
+    os_name = operating_system_name(platform_name)
+    candidates = (
+        candidate_windows_paths(env)["player_logs"]
+        if os_name == "Windows"
+        else candidate_macos_paths()["player_logs"]
     )
+    existing = []
+    for candidate in candidates:
+        expanded = candidate.expanduser()
+        record_checked_path(checked_paths, expanded)
+        if path_exists(expanded):
+            existing.append(expanded)
+    return existing
+
+
+def find_card_database(
+    platform_name: str | None = None,
+    env: dict[str, str] | None = None,
+    checked_paths: list[Path] | None = None,
+) -> Path | None:
+    """Find the newest local Arena raw card database for the current platform."""
+    os_name = operating_system_name(platform_name)
+    path_sets = (
+        candidate_windows_paths(env)
+        if os_name == "Windows"
+        else candidate_macos_paths()
+    )
+
+    known_matches = []
+    for raw_dir in path_sets["carddb_known_dirs"]:
+        found = newest_carddb_in_dir(raw_dir, checked_paths)
+        if found:
+            known_matches.append(found)
+    if known_matches:
+        return newest_existing_path(known_matches)
+
+    recursive_matches = []
+    for root in path_sets["carddb_recursive_roots"]:
+        found = newest_carddb_under_root(root, checked_paths)
+        if found:
+            recursive_matches.append(found)
+    return newest_existing_path(recursive_matches)
+
+
+def likely_player_log_path() -> Path | None:
+    """Find MTG Arena's Player.log in common local locations."""
+    logs = find_player_logs()
+    for log_path in logs:
+        if log_path.name == "Player.log":
+            return log_path
+    return logs[0] if logs else None
 
 
 def arena_archive_log_paths(player_log: Path) -> list[Path]:
@@ -407,22 +644,36 @@ def player_log_paths_for_reading(player_log: Path, live: bool = False) -> list[P
 
 def likely_carddb_path() -> Path | None:
     """Find the newest local Arena raw card database in common locations."""
-    candidates = []
-    raw_dirs = [
-        Path("~/Library/Application Support/com.wizards.mtga/Downloads/Raw"),
-    ]
-    local_appdata = os.environ.get("LOCALAPPDATA")
-    if local_appdata:
-        raw_dirs.append(Path(local_appdata) / "Packages" / "WizardsOfTheCoast.MTGA_8wekyb3d8bbwe" / "LocalCache" / "Local" / "Temp" / "Wizards Of The Coast" / "MTGA" / "Downloads" / "Raw")
-    for raw_dir in raw_dirs:
-        candidates.extend(raw_dir.expanduser().glob("Raw_CardDatabase_*.mtga"))
-    return newest_existing_path(candidates)
+    return find_card_database()
 
 
-def path_setup_instructions(missing: list[str]) -> str:
+def format_checked_paths(label: str, paths: list[Path]) -> str:
+    """Format candidate paths and existence state for diagnostics."""
+    lines = [f"{label} checked:"]
+    if not paths:
+        lines.append("  (none)")
+        return "\n".join(lines)
+    for path in dedupe_paths(paths):
+        lines.append(f"  [{'yes' if path_exists(path) else 'no '}] {path}")
+    return "\n".join(lines)
+
+
+def path_setup_instructions(
+    missing: list[str],
+    player_checked: list[Path] | None = None,
+    carddb_checked: list[Path] | None = None,
+) -> str:
     """Build a user-facing setup message when paths cannot be discovered."""
     missing_text = " and ".join(missing)
-    return f"""Could not find {missing_text}.
+    checked_sections = []
+    if player_checked is not None:
+        checked_sections.append(format_checked_paths("Player log paths", player_checked))
+    if carddb_checked is not None:
+        checked_sections.append(format_checked_paths("Card database paths", carddb_checked))
+    checked_text = "\n\n".join(checked_sections)
+    if checked_text:
+        checked_text = f"\n\n{checked_text}"
+    return f"""Could not find {missing_text}.{checked_text}
 
 You can pass paths directly:
   python3 mtga_extract_games.py "/path/to/Player.log" "/path/to/Raw_CardDatabase_....mtga" --last 1
@@ -436,7 +687,111 @@ On macOS, Player.log is usually here:
 
 The card database is usually the newest Raw_CardDatabase_*.mtga file here:
   ~/Library/Application Support/com.wizards.mtga/Downloads/Raw/
+
+On Windows, Player.log is usually here:
+  %USERPROFILE%\\AppData\\LocalLow\\Wizards Of The Coast\\MTGA\\Player.log
+
+Common Windows card database locations are under:
+  %ProgramFiles%\\Wizards of the Coast\\MTGA\\MTGA_Data\\Downloads\\Raw
+  %LOCALAPPDATA%\\Packages\\WizardsOfTheCoast.MTGA_8wekyb3d8bbwe\\LocalCache\\Local\\Temp\\Wizards Of The Coast\\MTGA\\Downloads\\Raw
 """
+
+
+def discover_input_paths(
+    player_log_arg: Path | None,
+    carddb_arg: Path | None,
+    *,
+    platform_name: str | None = None,
+    env: dict[str, str] | None = None,
+) -> dict:
+    """Discover input paths and collect candidate diagnostics."""
+    env = env or os.environ
+    os_name = operating_system_name(platform_name)
+    player_checked = []
+    carddb_checked = []
+
+    player_log = None
+    player_source = None
+    if player_log_arg:
+        player_log = player_log_arg.expanduser()
+        player_source = "argument"
+        record_checked_path(player_checked, player_log)
+    else:
+        player_log = env_path_from_names(env, ["LOG", "PLAYER_LOG", "MTGA_PLAYER_LOG"])
+        if player_log:
+            player_source = "environment"
+            record_checked_path(player_checked, player_log)
+        else:
+            logs = find_player_logs(platform_name, env, player_checked)
+            for log_path in logs:
+                if log_path.name == "Player.log":
+                    player_log = log_path
+                    break
+            if player_log is None and logs:
+                player_log = logs[0]
+            if player_log:
+                player_source = "autodiscovery"
+
+    carddb = None
+    carddb_source = None
+    if carddb_arg:
+        carddb = carddb_arg.expanduser()
+        carddb_source = "argument"
+        record_checked_path(carddb_checked, carddb)
+    else:
+        carddb = env_path_from_names(env, ["CARDDB", "MTGA_CARDDB", "MTGA_CARD_DATABASE"])
+        if carddb:
+            carddb_source = "environment"
+            record_checked_path(carddb_checked, carddb)
+        else:
+            carddb = find_card_database(platform_name, env, carddb_checked)
+            if carddb:
+                carddb_source = "autodiscovery"
+
+    env_names = ["LOG", "PLAYER_LOG", "MTGA_PLAYER_LOG", "CARDDB", "MTGA_CARDDB", "MTGA_CARD_DATABASE"]
+    if os_name == "Windows":
+        env_names.extend(WINDOWS_ENV_VARS)
+    else:
+        env_names.append("HOME")
+
+    return {
+        "os": os_name,
+        "env": {name: env.get(name) for name in env_names if env.get(name)},
+        "player_log": player_log,
+        "player_source": player_source,
+        "player_checked": player_checked,
+        "carddb": carddb,
+        "carddb_source": carddb_source,
+        "carddb_checked": carddb_checked,
+    }
+
+
+def format_path_diagnostics(diagnostics: dict) -> str:
+    """Format path discovery diagnostics for --find-paths."""
+    lines = [f"Operating system detected: {diagnostics['os']}"]
+    lines.append("Environment variables used:")
+    if diagnostics["env"]:
+        for name, value in diagnostics["env"].items():
+            lines.append(f"  {name}={value}")
+    else:
+        lines.append("  (none)")
+    lines.append("")
+    lines.append(format_checked_paths("Player log paths", diagnostics["player_checked"]))
+    selected_log = diagnostics["player_log"]
+    lines.append(
+        f"Selected player log: {selected_log if selected_log and path_exists(selected_log) else '(none)'}"
+    )
+    if diagnostics["player_source"]:
+        lines.append(f"Player log source: {diagnostics['player_source']}")
+    lines.append("")
+    lines.append(format_checked_paths("Card database paths", diagnostics["carddb_checked"]))
+    selected_carddb = diagnostics["carddb"]
+    lines.append(
+        f"Selected card database: {selected_carddb if selected_carddb and path_exists(selected_carddb) else '(none)'}"
+    )
+    if diagnostics["carddb_source"]:
+        lines.append(f"Card database source: {diagnostics['carddb_source']}")
+    return "\n".join(lines)
 
 
 def resolve_input_paths(
@@ -444,26 +799,32 @@ def resolve_input_paths(
     carddb_arg: Path | None,
     *,
     live: bool = False,
+    platform_name: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> tuple[Path, Path, str | None]:
     """Resolve CLI/env/autodiscovered paths and return an optional warning."""
-    player_log = (
-        player_log_arg.expanduser()
-        if player_log_arg
-        else env_path(["LOG", "PLAYER_LOG", "MTGA_PLAYER_LOG"]) or likely_player_log_path()
+    diagnostics = discover_input_paths(
+        player_log_arg,
+        carddb_arg,
+        platform_name=platform_name,
+        env=env,
     )
-    carddb = (
-        carddb_arg.expanduser()
-        if carddb_arg
-        else env_path(["CARDDB", "MTGA_CARDDB", "MTGA_CARD_DATABASE"]) or likely_carddb_path()
-    )
+    player_log = diagnostics["player_log"]
+    carddb = diagnostics["carddb"]
 
     missing = []
-    if player_log is None or not player_log.exists():
+    if player_log is None or not path_exists(player_log):
         missing.append("Player.log")
-    if carddb is None or not carddb.exists():
+    if carddb is None or not path_exists(carddb):
         missing.append("Raw_CardDatabase_*.mtga")
     if missing:
-        raise FileNotFoundError(path_setup_instructions(missing))
+        raise FileNotFoundError(
+            path_setup_instructions(
+                missing,
+                diagnostics["player_checked"],
+                diagnostics["carddb_checked"],
+            )
+        )
 
     warning = None
     if player_log_arg is None or carddb_arg is None:
@@ -682,12 +1043,60 @@ LAND_COLORS = {
     "Snow-Covered Forest": GREEN_MANA_COLOR,
     "Wastes": COLOURLESS_MANA_COLOR,
 }
+MANA_SYMBOL_LABELS = {
+    1: "W",
+    2: "U",
+    3: "B",
+    4: "R",
+    5: "G",
+    6: "C",
+}
+MANA_COLOR_VALUES = {
+    "ManaColor_White": 1,
+    "ManaColor_Blue": 2,
+    "ManaColor_Black": 3,
+    "ManaColor_Red": 4,
+    "ManaColor_Green": 5,
+    "ManaColor_Colorless": 6,
+    "ManaColor_Generic": 6,
+}
 COLORLESS_LAND_NAMES = {
     "Cavern of Souls",
     "Field of Ruin",
     "Mutavault",
     "Nykthos, Shrine to Nyx",
     "Reliquary Tower",
+}
+LAND_MANA_OPTIONS = {
+    "Adarkar Wastes": {1, 2},
+    "Battlefield Forge": {1, 4},
+    "Brushland": {1, 5},
+    "Caves of Koilos": {1, 3},
+    "Karplusan Forest": {4, 5},
+    "Llanowar Wastes": {3, 5},
+    "Shivan Reef": {2, 4},
+    "Sulfurous Springs": {3, 4},
+    "Underground River": {2, 3},
+    "Yavimaya Coast": {2, 5},
+    "Raugrin Triome": {1, 2, 4},
+    "Rockfall Vale": {4, 5},
+    "Command Tower": {1, 2, 3, 4, 5},
+    **{name: {value} for value, name in ((1, "Plains"), (2, "Island"), (3, "Swamp"), (4, "Mountain"), (5, "Forest"))},
+    **{name: {value} for value, name in ((1, "Snow-Covered Plains"), (2, "Snow-Covered Island"), (3, "Snow-Covered Swamp"), (4, "Snow-Covered Mountain"), (5, "Snow-Covered Forest"))},
+    **{name: {6} for name in ("Wastes", *COLORLESS_LAND_NAMES, "Urza's Mine", "Urza's Power Plant", "Urza's Tower")},
+}
+NON_MANA_LAND_NAMES = {
+    "Evolving Wilds",
+    "Fabled Passage",
+    "Flooded Strand",
+    "Marsh Flats",
+    "Misty Rainforest",
+    "Polluted Delta",
+    "Prismatic Vista",
+    "Scalding Tarn",
+    "Verdant Catacombs",
+    "Windswept Heath",
+    "Wooded Foothills",
 }
 MULTICOLOUR_LAND_COLORS = {
     "Wind-Scarred Crag": (1, 4),
@@ -1700,6 +2109,159 @@ def phrase_library_count(label: str, count: int | None) -> str:
     return f"{label}: {count} card{plural}"
 
 
+def mana_option_labels(options: set[int]) -> str:
+    """Render one land's possible mana colours compactly."""
+    return "/".join(MANA_SYMBOL_LABELS[value] for value in sorted(options) if value in MANA_SYMBOL_LABELS)
+
+
+def mana_options_from_ability_texts(metadata: dict | None) -> set[int] | None:
+    """Conservatively parse simple Add-one-mana land ability text from card metadata."""
+    if not metadata:
+        return None
+    values = set()
+    for text in metadata.get("ability_texts") or []:
+        if "add" not in text.casefold():
+            continue
+        for symbol in re.findall(r"\{o([WUBRGC])\}", text):
+            value = {"W": 1, "U": 2, "B": 3, "R": 4, "G": 5, "C": 6}.get(symbol)
+            if value:
+                values.add(value)
+    return values or None
+
+
+def mana_restriction_from_ability_texts(metadata: dict | None) -> str | None:
+    """Return a short spending restriction when a mana ability is visibly limited."""
+    if not metadata:
+        return None
+    for text in metadata.get("ability_texts") or []:
+        lower = text.casefold()
+        if "spend this mana only" not in lower:
+            continue
+        if "activate abilities" in lower:
+            return "abilities only"
+        if "cast creature" in lower or "creature spells" in lower:
+            return "creatures only"
+        if "cast" in lower and "spell" in lower:
+            return "restricted spells only"
+        return "restricted"
+    return None
+
+
+def land_mana_options(name: str, metadata: dict | None = None) -> set[int] | None:
+    """Return known mana options for a land name, or None when it is an unknown source."""
+    if name in NON_MANA_LAND_NAMES:
+        return set()
+    if name in LAND_MANA_OPTIONS:
+        return set(LAND_MANA_OPTIONS[name])
+    return mana_options_from_ability_texts(metadata)
+
+
+def mana_value_from_color(color: str | None) -> int | None:
+    """Convert an Arena mana colour enum to this module's compact colour value."""
+    return MANA_COLOR_VALUES.get(color or "")
+
+
+def mana_values_from_payment_option(option: dict) -> set[int]:
+    """Collect possible colour values from one Arena mana payment option."""
+    values = set()
+    for mana in option.get("mana") or []:
+        color = mana.get("color")
+        if color == "ManaColor_AnyColor":
+            values.update({1, 2, 3, 4, 5})
+            continue
+        value = mana_value_from_color(color)
+        if value:
+            values.add(value)
+    return values
+
+
+def mana_amount_from_payment_option(option: dict) -> int:
+    """Return the amount of mana represented by one Arena payment option."""
+    amount = 0
+    for mana in option.get("mana") or []:
+        try:
+            amount += int(mana.get("count") or 1)
+        except (TypeError, ValueError):
+            amount += 1
+    return amount
+
+
+def mana_amount_from_pool_entry(entry: dict) -> int:
+    """Return the amount of mana represented by one Arena mana-pool entry."""
+    try:
+        return int(entry.get("count") or 1)
+    except (TypeError, ValueError):
+        return 1
+
+
+def mana_restriction_from_specs(option: dict) -> str | None:
+    """Summarize non-origin Arena mana specs as spending restrictions."""
+    ignored_specs = {"ManaSpecType_Predictive", "ManaSpecType_FromTreasure"}
+    spec_types = {
+        spec.get("type")
+        for mana in option.get("mana") or []
+        for spec in mana.get("specs") or []
+        if spec.get("type")
+    }
+    restricted = sorted(spec_types - ignored_specs)
+    if not restricted:
+        return None
+    return ", ".join(spec.replace("ManaSpecType_", "") for spec in restricted)
+
+
+def format_mana_pool(mana_pool: list[dict] | None) -> str | None:
+    """Format the current floating mana pool from Arena player state."""
+    if not mana_pool:
+        return None
+    counts = Counter()
+    restricted = []
+    for entry in mana_pool:
+        value = mana_value_from_color(entry.get("color"))
+        amount = mana_amount_from_pool_entry(entry)
+        if value:
+            counts[value] += amount
+        restriction = mana_restriction_from_specs({"mana": [entry]})
+        if restriction:
+            restricted.append(f"{amount} {MANA_SYMBOL_LABELS.get(value, '?')} [{restriction}]")
+    parts = []
+    for value in (1, 2, 3, 4, 5, 6):
+        if counts[value]:
+            parts.append(f"{counts[value]} {MANA_SYMBOL_LABELS[value]}")
+    if restricted:
+        parts.append(f"restricted: {', '.join(restricted)}")
+    return f"Floating mana: {'; '.join(parts)}" if parts else None
+
+
+def format_available_mana_summary(
+    total: int,
+    known_options: list[set[int]],
+    unknown_count: int = 0,
+    restricted: list[str] | None = None,
+    label: str = "Available mana",
+) -> str | None:
+    """Format a mana availability summary for turn-state snapshots."""
+    restricted = restricted or []
+    if total <= 0 and not restricted:
+        return None
+    union = set().union(*known_options) if known_options else set()
+    color_options = union - {6}
+    parts = []
+    if color_options:
+        parts.append(f"colors: {mana_option_labels(color_options)}")
+    colorless_only = sum(1 for options in known_options if options == {6})
+    if colorless_only:
+        parts.append(f"{colorless_only} colorless-only")
+    if unknown_count:
+        parts.append(f"{unknown_count} unknown/flexible")
+    if restricted:
+        parts.append(f"restricted: {', '.join(restricted)}")
+    detail = f" ({'; '.join(parts)})" if parts else ""
+    if total <= 0 and restricted:
+        return f"{label}: restricted only{detail}"
+    total_label = "general" if restricted else "total"
+    return f"{label}: {total} {total_label}{detail}"
+
+
 def card_has_type(obj: dict | None, metadata: dict | None, arena_type: str, type_number: int) -> bool:
     """Check a card type using live object enums first, then card DB metadata."""
     if obj and arena_type in set(obj.get("cardTypes") or []):
@@ -2264,6 +2826,7 @@ def extract_game_plays(
     known_local_seat = None
     current_match_number = 0
     current_turn_info = {}
+    current_actions = []
     current_phase_section = None
     emitted_phase_section = None
     suppress_phase_heading = False
@@ -3270,6 +3833,99 @@ def extract_game_plays(
                 )
         return rows
 
+    def mana_restriction_for_source(instance_id):
+        """Return a known source-level mana spending restriction."""
+        return mana_restriction_from_ability_texts(metadata_for_object(objects.get(instance_id, {})))
+
+    def available_mana_line_from_actions(seat):
+        """Summarize currently activatable mana sources from Arena legal actions."""
+        total = 0
+        unknown_count = 0
+        known_options = []
+        restricted = []
+        seen_sources = set()
+        for action_wrapper in current_actions:
+            action = action_wrapper.get("action") or action_wrapper
+            if action.get("actionType") != "ActionType_Activate_Mana":
+                continue
+            source_id = action.get("instanceId")
+            if source_id in seen_sources:
+                continue
+            source_obj = objects.get(source_id, {})
+            controller = source_obj.get("controllerSeatId") or source_obj.get("ownerSeatId")
+            if controller != seat:
+                continue
+            options = action.get("manaPaymentOptions") or []
+            if not options:
+                continue
+            seen_sources.add(source_id)
+            best_amount = max(mana_amount_from_payment_option(option) for option in options)
+            source_options = set()
+            source_restrictions = set()
+            for option in options:
+                source_options.update(mana_values_from_payment_option(option))
+                restriction = mana_restriction_from_specs(option)
+                if restriction:
+                    source_restrictions.add(restriction)
+            text_restriction = mana_restriction_for_source(source_id)
+            if text_restriction and source_options != {6}:
+                source_restrictions.add(text_restriction)
+            if source_restrictions:
+                name = card_label_for_snapshot(source_id)
+                labels = mana_option_labels(source_options) if source_options else "unknown"
+                restricted.append(
+                    f"{name} {best_amount} {labels} [{', '.join(sorted(source_restrictions))}]"
+                )
+                continue
+            total += best_amount
+            if source_options:
+                known_options.append(source_options)
+            else:
+                unknown_count += best_amount
+        return format_available_mana_summary(total, known_options, unknown_count, restricted)
+
+    def available_mana_line_from_board(seat):
+        """Fallback mana summary from untapped permanents controlled by this seat."""
+        battlefield_zone_ids = zone_ids_by_type("ZoneType_Battlefield")
+        total = 0
+        unknown_count = 0
+        known_options = []
+        restricted = []
+        for obj in objects.values():
+            if obj.get("zoneId") not in battlefield_zone_ids:
+                continue
+            if obj.get("type") not in {"GameObjectType_Card", "GameObjectType_Token"}:
+                continue
+            controller = obj.get("controllerSeatId") or obj.get("ownerSeatId")
+            if controller != seat or obj.get("isTapped"):
+                continue
+            is_land = battlefield_row_for_object(obj) == "lands"
+            is_creature = "CardType_Creature" in set(obj.get("cardTypes") or [])
+            if is_creature and obj.get("hasSummoningSickness"):
+                continue
+            name = card_label_for_snapshot(obj.get("instanceId"))
+            metadata = metadata_for_object(obj)
+            options = land_mana_options(name, metadata) if is_land else mana_options_from_ability_texts(metadata)
+            if options == set():
+                continue
+            if not is_land and not options:
+                continue
+            restriction = mana_restriction_from_ability_texts(metadata)
+            if restriction and options != {6}:
+                labels = mana_option_labels(options) if options else "unknown"
+                restricted.append(f"{name} 1 {labels} [{restriction}]")
+                continue
+            total += 1
+            if options:
+                known_options.append(options)
+            else:
+                unknown_count += 1
+        return format_available_mana_summary(total, known_options, unknown_count, restricted)
+
+    def available_mana_line(seat):
+        """Prefer Arena legal actions, falling back to board-derived mana sources."""
+        return available_mana_line_from_actions(seat) or available_mana_line_from_board(seat)
+
     def board_row_line(label, row):
         """Render one board row, grouping permanents by tapped state."""
         parts = []
@@ -3376,6 +4032,9 @@ def extract_game_plays(
     def emit_board_rows(seat):
         """Print board rows in the requested land/noncreature/creature order."""
         rows = battlefield_rows(seat)
+        floating_line = format_mana_pool(players.get(seat, {}).get("manaPool"))
+        if floating_line:
+            emit(f"  {floating_line}")
         for label, row in (
             ("Lands", rows["lands"]),
             ("Artifacts/Enchantments", rows["artifacts_enchantments"]),
@@ -3384,6 +4043,10 @@ def extract_game_plays(
             line = board_row_line(label, row)
             if line:
                 emit(line)
+                if label == "Lands":
+                    mana_line = available_mana_line(seat)
+                    if mana_line:
+                        emit(f"  {mana_line}")
         if rows["other"]["untapped"] or rows["other"]["tapped"]:
             emit(board_row_line("Other", rows["other"]))
 
@@ -4796,6 +5459,7 @@ def extract_game_plays(
                         if game_state_id is not None:
                             last_game_state_id = game_state_id
 
+                        current_actions = gsm.get("actions") or []
                         update_state(gsm)
                         if known_local_seat is None:
                             known_local_seat = infer_local_seat()
@@ -5062,6 +5726,9 @@ def main() -> None:
   Highlight my lines and opponent lines in a terminal:
     python3 mtga_extract_games.py --last 1 --colour always
 
+  Show path discovery diagnostics:
+    python3 mtga_extract_games.py --find-paths
+
 macOS path examples:
   LOG="$HOME/Library/Logs/Wizards Of The Coast/MTGA/Player.log"
   CARDDB="$HOME/Library/Application Support/com.wizards.mtga/Downloads/Raw/Raw_CardDatabase_....mtga"
@@ -5083,6 +5750,11 @@ No pip install step is required; this script only uses Python's standard library
         nargs="?",
         type=Path,
         help="optional path to Raw_CardDatabase_*.mtga from Arena's Downloads/Raw folder",
+    )
+    parser.add_argument(
+        "--find-paths",
+        action="store_true",
+        help="print path discovery diagnostics and exit",
     )
     parser.add_argument(
         "--debug-annotations",
@@ -5220,6 +5892,11 @@ No pip install step is required; this script only uses Python's standard library
         help="read and print directly from the available logs without updating the archive",
     )
     args = parser.parse_args()
+
+    if args.find_paths:
+        diagnostics = discover_input_paths(args.player_log, args.carddb)
+        print(format_path_diagnostics(diagnostics))
+        return
 
     try:
         player_log, carddb, path_warning = resolve_input_paths(
