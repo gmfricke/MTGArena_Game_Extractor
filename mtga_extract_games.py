@@ -2221,19 +2221,28 @@ def mana_amount_from_pool_entry(entry: dict) -> int:
         return 1
 
 
-def mana_restriction_from_specs(option: dict) -> str | None:
-    """Summarize non-origin Arena mana specs as spending restrictions."""
+def mana_note_from_specs(option: dict) -> tuple[str | None, str | None]:
+    """Split Arena mana specs into real restrictions and source-only tags."""
     ignored_specs = {"ManaSpecType_Predictive", "ManaSpecType_FromTreasure"}
+    source_tag_specs = {"ManaSpecType_FromSnow"}
     spec_types = {
         spec.get("type")
         for mana in option.get("mana") or []
         for spec in mana.get("specs") or []
         if spec.get("type")
     }
-    restricted = sorted(spec_types - ignored_specs)
-    if not restricted:
-        return None
-    return ", ".join(spec.replace("ManaSpecType_", "") for spec in restricted)
+    filtered = spec_types - ignored_specs
+    source_tags = sorted(filtered & source_tag_specs)
+    restricted = sorted(filtered - source_tag_specs)
+    restriction = ", ".join(spec.replace("ManaSpecType_", "") for spec in restricted) or None
+    source_tag = ", ".join(spec.replace("ManaSpecType_", "").removeprefix("From") for spec in source_tags) or None
+    return restriction, source_tag
+
+
+def mana_restriction_from_specs(option: dict) -> str | None:
+    """Summarize true Arena mana spending restrictions."""
+    restriction, _source_tag = mana_note_from_specs(option)
+    return restriction
 
 
 def format_mana_pool(mana_pool: list[dict] | None) -> str | None:
@@ -2242,20 +2251,29 @@ def format_mana_pool(mana_pool: list[dict] | None) -> str | None:
         return None
     counts = Counter()
     restricted = []
+    source_tags = Counter()
     for entry in mana_pool:
         value = mana_value_from_color(entry.get("color"))
         amount = mana_amount_from_pool_entry(entry)
         if value:
             counts[value] += amount
-        restriction = mana_restriction_from_specs({"mana": [entry]})
+        restriction, source_tag = mana_note_from_specs({"mana": [entry]})
         if restriction:
             restricted.append(f"{amount} {MANA_SYMBOL_LABELS.get(value, '?')} [{restriction}]")
+        if source_tag:
+            source_tags[(amount, MANA_SYMBOL_LABELS.get(value, "?"), source_tag)] += 1
     parts = []
     for value in (1, 2, 3, 4, 5, 6):
         if counts[value]:
             parts.append(f"{counts[value]} {MANA_SYMBOL_LABELS[value]}")
     if restricted:
         parts.append(f"restricted: {', '.join(restricted)}")
+    if source_tags:
+        tag_parts = []
+        for (amount, symbol, source_tag), count in sorted(source_tags.items()):
+            prefix = f"{count}x " if count > 1 else ""
+            tag_parts.append(f"{prefix}{amount} {symbol} [{source_tag}]")
+        parts.append(f"source tags: {', '.join(tag_parts)}")
     return f"Floating mana: {'; '.join(parts)}" if parts else None
 
 
@@ -2284,7 +2302,7 @@ def format_available_mana_summary(
         parts.append(f"restricted: {', '.join(restricted)}")
     detail = f" ({'; '.join(parts)})" if parts else ""
     if total <= 0 and restricted:
-        return f"{label}: restricted only{detail}"
+        return f"{label}: only restricted sources{detail}"
     total_label = "general" if restricted else "total"
     return f"{label}: {total} {total_label}{detail}"
 
@@ -3591,7 +3609,10 @@ def extract_game_plays(
             return remembered_object_labels[instance_id]
         obj = objects.get(instance_id, {})
         if obj.get("type") == "GameObjectType_Ability":
-            return object_label_from_object(obj) or remembered_object_labels.get(instance_id)
+            label = object_label_from_object(obj) or remembered_object_labels.get(instance_id)
+            if label and not label.startswith("grpId "):
+                return label
+            return None
         if obj.get("isCopy"):
             base = object_label_from_object(obj) or remembered_object_labels.get(instance_id)
             return copied_object_label(base, True)

@@ -1331,7 +1331,24 @@ class WordingTests(unittest.TestCase):
                 [],
                 restricted=["Giada, Font of Hope 1 W [restricted spells only]"],
             ),
-            "Available mana: restricted only (restricted: Giada, Font of Hope 1 W [restricted spells only])",
+            "Available mana: only restricted sources (restricted: Giada, Font of Hope 1 W [restricted spells only])",
+        )
+        self.assertEqual(
+            format_mana_pool(
+                [
+                    {
+                        "color": "ManaColor_Green",
+                        "count": 1,
+                        "specs": [{"type": "ManaSpecType_FromSnow"}],
+                    },
+                    {
+                        "color": "ManaColor_Green",
+                        "count": 1,
+                        "specs": [{"type": "ManaSpecType_FromSnow"}],
+                    },
+                ],
+            ),
+            "Floating mana: 2 G; source tags: 2x 1 G [Snow]",
         )
 
     def test_commander_wording(self):
