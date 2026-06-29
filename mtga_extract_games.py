@@ -38,10 +38,6 @@ PLAYER_COUNTER_NAMES = {
 }
 
 BASE_CHOICE_VALUE_NAMES = {
-    4: {
-        1: "Artifact", 2: "Creature", 3: "Enchantment", 4: "Instant",
-        5: "Land", 6: "Planeswalker", 7: "Sorcery", 8: "Battle",
-    },
     6: {1: "White", 2: "Blue", 3: "Black", 4: "Red", 5: "Green", 6: "Colorless"},
     11: {1: "creature"},
     14: {0: "even", 1: "odd"},
@@ -58,9 +54,14 @@ def clear_all(*containers):
         container.clear()
 
 
-def build_choice_value_names(subtype_names: dict[int, str]) -> dict[int, dict[int, str]]:
+def build_choice_value_names(
+    subtype_names: dict[int, str],
+    card_type_names: dict[int, str] | None = None,
+) -> dict[int, dict[int, str]]:
     """Build lookup tables for numeric Arena choice values, including card database creature types."""
     values = {domain: dict(names) for domain, names in BASE_CHOICE_VALUE_NAMES.items()}
+    if card_type_names:
+        values[4] = dict(card_type_names)
     values[5] = {1: "Angel", **subtype_names}
     return values
 
@@ -154,6 +155,8 @@ def load_grp_id_to_metadata(carddb_path: Path) -> dict[int, dict]:
     colors_expr = "c.Colors" if "Colors" in card_columns else "''"
     color_identity_expr = "c.ColorIdentity" if "ColorIdentity" in card_columns else "''"
     frame_colors_expr = "c.FrameColors" if "FrameColors" in card_columns else "''"
+    mana_cost_expr = "c.OldSchoolManaText" if "OldSchoolManaText" in card_columns else "''"
+    mana_value_expr = "c.Order_CMCWithXLast" if "Order_CMCWithXLast" in card_columns else "NULL"
 
     cur.execute(f"""
         SELECT
@@ -164,7 +167,9 @@ def load_grp_id_to_metadata(carddb_path: Path) -> dict[int, dict]:
             c.AbilityIds,
             {colors_expr},
             {color_identity_expr},
-            {frame_colors_expr}
+            {frame_colors_expr},
+            {mana_cost_expr},
+            {mana_value_expr}
         FROM Cards c
         JOIN Localizations_enUS l
           ON c.TitleId = l.LocId
@@ -182,6 +187,8 @@ def load_grp_id_to_metadata(carddb_path: Path) -> dict[int, dict]:
         colors_text,
         color_identity_text,
         frame_colors_text,
+        mana_cost_text,
+        mana_value,
     ) in cur.fetchall():
         grp_id = int(grp_id)
         if grp_id not in metadata:
@@ -192,6 +199,8 @@ def load_grp_id_to_metadata(carddb_path: Path) -> dict[int, dict]:
                 "colors": set(parse_carddb_int_list(colors_text)),
                 "color_identity": set(parse_carddb_int_list(color_identity_text)),
                 "frame_colors": set(parse_carddb_int_list(frame_colors_text)),
+                "mana_cost": mana_cost_text or "",
+                "mana_value": mana_value,
                 "ability_texts": [],
                 "play_mechanics": [],
             }
@@ -2109,6 +2118,24 @@ def phrase_library_count(label: str, count: int | None) -> str:
     return f"{label}: {count} card{plural}"
 
 
+def format_card_mana_cost(raw_cost: str | None) -> str | None:
+    """Format Arena's compact mana text as a short human-readable cost."""
+    if not raw_cost:
+        return None
+    parts = re.findall(r"o(\d+|[WUBRGCX])", raw_cost)
+    if not parts:
+        return None
+    return "".join(parts)
+
+
+def card_cost_suffix(metadata: dict | None) -> str:
+    """Return a compact hand-zone mana cost suffix when known."""
+    cost = format_card_mana_cost((metadata or {}).get("mana_cost"))
+    if not cost:
+        return ""
+    return f" [cost {cost}]"
+
+
 def mana_option_labels(options: set[int]) -> str:
     """Render one land's possible mana colours compactly."""
     return "/".join(MANA_SYMBOL_LABELS[value] for value in sorted(options) if value in MANA_SYMBOL_LABELS)
@@ -2861,7 +2888,8 @@ def extract_game_plays(
     card_name_pattern = build_card_name_pattern(card_name_colors)
     subtype_names = enum_value_names.get("SubType") or {}
     counter_type_names = enum_value_names.get("CounterType") or {}
-    choice_value_names = build_choice_value_names(subtype_names)
+    card_type_names = enum_value_names.get("CardType") or {}
+    choice_value_names = build_choice_value_names(subtype_names, card_type_names)
     def transcript_line_needs_phase_heading(line: str) -> bool:
         """Return true for visible gameplay lines that benefit from phase context."""
         if not line or line.startswith(("=", "-- ", "  ", "    ")):
@@ -2919,6 +2947,23 @@ def extract_game_plays(
         """Append a transcript line and print it immediately in live mode."""
         emit_phase_heading_if_needed(line)
         if current_match_lines is not None:
+            if (
+                live
+                and current_match_lines
+                and current_match_lines[-1] == line
+                and should_combine_transcript_line(line)
+            ):
+                current_match_lines[-1] = f"2x {line}"
+                return
+            if (
+                live
+                and current_match_lines
+                and should_combine_transcript_line(line)
+            ):
+                duplicate_match = re.fullmatch(r"(\d+)x (.+)", current_match_lines[-1])
+                if duplicate_match and duplicate_match.group(2) == line:
+                    current_match_lines[-1] = f"{int(duplicate_match.group(1)) + 1}x {line}"
+                    return
             current_match_lines.append(line)
             if live:
                 print(
@@ -3963,7 +4008,10 @@ def extract_game_plays(
             if zone.get("ownerSeatId") != seat:
                 continue
             for instance_id in zone.get("objectInstanceIds") or []:
-                names.append(card_label_for_snapshot(instance_id))
+                name = card_label_for_snapshot(instance_id)
+                if name not in {"unknown card", "a face-down card"}:
+                    name = f"{name}{card_cost_suffix(metadata_for_object(objects.get(instance_id, {})))}"
+                names.append(name)
         return names
 
     def library_count(seat):
@@ -4339,6 +4387,8 @@ def extract_game_plays(
             flush_pending_event_groups()
             pending_stack_casts.pop(iid, None)
             stack_display_names[iid] = name
+            if iid in emitted_cast_instance_ids:
+                return
             suffix = " from command zone" if from_command else ""
             if from_command:
                 commander_text = note_commander_cast(iid, details.get("grpid"))
@@ -5942,6 +5992,8 @@ No pip install step is required; this script only uses Python's standard library
         # Object counter annotations use CounterType values. Loading this enum
         # lets board-state snapshots say +1/+1 instead of raw counter ids.
         "CounterType": load_enum_value_names(carddb, "CounterType"),
+        # Card-type choice result annotations use the Arena CardType enum.
+        "CardType": load_enum_value_names(carddb, "CardType"),
     }
     debug_grp_ids = set(args.debug_grpid)
     for card_name in args.debug_card:

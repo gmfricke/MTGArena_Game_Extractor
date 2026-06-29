@@ -19,6 +19,7 @@ from mtga_extract_games import (
     archived_transcript_matches,
     available_resource_lines,
     base_cast_name,
+    build_choice_value_names,
     build_card_name_colors,
     build_card_name_pattern,
     card_is_land,
@@ -81,6 +82,7 @@ from mtga_extract_games import (
     phrase_zone_change,
     find_target_like_paths,
     format_available_mana_summary,
+    format_card_mana_cost,
     format_mana_pool,
     format_path_diagnostics,
     format_game_type,
@@ -1129,6 +1131,15 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(phrase_choice_value("creature type", 25, "Elemental"), "Elemental")
         self.assertEqual(phrase_choice_value("mana value parity", 0, "even"), "even")
 
+    def test_card_type_choices_use_arena_enum_values(self):
+        """Check card-type choices use Arena's CardType enum values."""
+        choices = build_choice_value_names(
+            {},
+            {8: "Planeswalker", 10: "Sorcery", 14: "Battle"},
+        )
+        self.assertEqual(choices[4][8], "Planeswalker")
+        self.assertEqual(choices[4][14], "Battle")
+
     def test_incomplete_game_notice_is_conservative(self):
         """Check incomplete game notice is conservative."""
         self.assertEqual(
@@ -1178,15 +1189,19 @@ class WordingTests(unittest.TestCase):
             carddb = Path(tmpdir) / "carddb.mtga"
             con = sqlite3.connect(carddb)
             cur = con.cursor()
-            cur.execute("CREATE TABLE Cards(GrpId INT, TitleId INT, Types TEXT, AbilityIds TEXT)")
+            cur.execute(
+                "CREATE TABLE Cards("
+                "GrpId INT, TitleId INT, Types TEXT, AbilityIds TEXT, "
+                "OldSchoolManaText TEXT, Order_CMCWithXLast INT)"
+            )
             cur.execute("CREATE TABLE Abilities(Id INT, TextId INT)")
             cur.execute("CREATE TABLE Localizations_enUS(LocId INT, Formatted INT, Loc TEXT)")
             cur.executemany(
-                "INSERT INTO Cards VALUES (?, ?, ?, ?)",
+                "INSERT INTO Cards VALUES (?, ?, ?, ?, ?, ?)",
                 [
-                    (100, 1, "5", ""),
-                    (200, 2, "10", "5301:3105"),
-                    (300, 3, "2", "7000:1"),
+                    (100, 1, "5", "", "", None),
+                    (200, 2, "10", "5301:3105", "oR", 1),
+                    (300, 3, "2", "7000:1", "o1oGoU", 3),
                 ],
             )
             cur.executemany(
@@ -1209,6 +1224,8 @@ class WordingTests(unittest.TestCase):
             metadata = load_grp_id_to_metadata(carddb)
 
         self.assertEqual(metadata[100]["type_numbers"], {5})
+        self.assertEqual(metadata[200]["mana_cost"], "oR")
+        self.assertEqual(metadata[200]["mana_value"], 1)
         self.assertEqual(metadata[200]["play_mechanics"], ["flashback"])
         self.assertEqual(metadata[300]["play_mechanics"], ["escape"])
 
@@ -1271,6 +1288,9 @@ class WordingTests(unittest.TestCase):
 
     def test_mana_summary_helpers(self):
         """Check mana availability and floating mana helpers."""
+        self.assertEqual(format_card_mana_cost("o7"), "7")
+        self.assertEqual(format_card_mana_cost("o2oW"), "2W")
+        self.assertEqual(format_card_mana_cost("o5oWoWoW"), "5WWW")
         self.assertEqual(land_mana_options("Wooded Foothills"), set())
         self.assertEqual(land_mana_options("Battlefield Forge"), {1, 4})
         metadata = {
