@@ -1725,6 +1725,31 @@ def capped_power_toughness_counter_amount(
     return amount
 
 
+def effect_power_toughness_modifier(
+    current_power: int | None,
+    current_toughness: int | None,
+    printed_power: int | None,
+    printed_toughness: int | None,
+    counter_parts: list[str],
+) -> str | None:
+    """Infer remaining visible P/T modification after printed stats and counters."""
+    if None in {current_power, current_toughness, printed_power, printed_toughness}:
+        return None
+    power_delta = current_power - printed_power
+    toughness_delta = current_toughness - printed_toughness
+    for part in counter_parts:
+        match = re.fullmatch(r"([+-]\d+)/([+-]\d+) from counters", part)
+        if not match:
+            continue
+        power_delta -= int(match.group(1))
+        toughness_delta -= int(match.group(2))
+    if power_delta == 0 and toughness_delta == 0:
+        return None
+    power_sign = "+" if power_delta >= 0 else ""
+    toughness_sign = "+" if toughness_delta >= 0 else ""
+    return f"{power_sign}{power_delta}/{toughness_sign}{toughness_delta} from effects"
+
+
 def grouped_name_phrase(names: list[str]) -> str:
     """Render repeated attachment names in the same style as board state."""
     counts = Counter(name for name in names if name)
@@ -1774,6 +1799,84 @@ def combine_duplicate_transcript_lines(lines: list[str]) -> list[str]:
             combined.append(line)
         index += count
     return combined
+
+
+def is_cast_line(line: str) -> bool:
+    """Return true for normal transcript cast lines after perspective wording."""
+    return bool(re.fullmatch(r"(I|Opponent|Player \d+) casts? .+", line or ""))
+
+
+def cast_line_identity(line: str) -> tuple[str, str] | None:
+    """Return the actor/card identity for duplicate-cast cleanup."""
+    match = re.fullmatch(r"(I|Opponent|Player \d+) casts? (.+)", line or "")
+    if not match:
+        return None
+    actor, spell = match.groups()
+    # Drop suffixes that are derived from later state, not spell identity.
+    spell = spell.split(" targeting ", 1)[0]
+    spell = spell.split("; commander cast", 1)[0]
+    return actor, spell
+
+
+def is_non_event_separator(line: str) -> bool:
+    """Return true for structural lines that can sit between duplicate events."""
+    return not line or line.startswith("-- ")
+
+
+def remove_near_duplicate_cast_lines(lines: list[str]) -> list[str]:
+    """Remove duplicate cast echoes separated only by phase/blank separators."""
+    cleaned = []
+    recent_cast = None
+    recent_separator_count = 0
+    for line in lines:
+        identity = cast_line_identity(line)
+        if identity and recent_cast == identity and recent_separator_count <= 2:
+            continue
+        cleaned.append(line)
+        if identity:
+            recent_cast = identity
+            recent_separator_count = 0
+        elif is_non_event_separator(line) and recent_cast is not None:
+            recent_separator_count += 1
+        else:
+            recent_cast = None
+            recent_separator_count = 0
+    return cleaned
+
+
+def transcript_diagnostics(lines: list[str]) -> list[str]:
+    """Return suspicious transcript artifacts that should be reviewed by a human."""
+    warnings = []
+    patterns = [
+        ("raw grpId leaked", re.compile(r"\bgrpId \d+\b")),
+        ("raw instance id leaked", re.compile(r"\binstance \d+\b")),
+        ("unidentified permanent death", re.compile(r"\bA permanent dies\b")),
+        ("negative library count", re.compile(r"\bLibrary: -\d+ cards?\b")),
+        ("unknown keyword choice", re.compile(r"\bunknown keyword \d+\b")),
+        ("unknown creature type choice", re.compile(r"\bunknown creature type \d+\b")),
+    ]
+    for line_number, line in enumerate(lines, start=1):
+        for label, pattern in patterns:
+            if pattern.search(line):
+                warnings.append(f"line {line_number}: {label}: {line}")
+                break
+        if re.search(r"\+\d{2,}/\+\d{2,} from counters", line):
+            warnings.append(f"line {line_number}: large counter summary, verify token/base stats: {line}")
+    seen_cast = None
+    separator_count = 0
+    for line_number, line in enumerate(lines, start=1):
+        identity = cast_line_identity(line)
+        if identity and identity == seen_cast and separator_count <= 2:
+            warnings.append(f"line {line_number}: near-duplicate cast line: {line}")
+        if identity:
+            seen_cast = identity
+            separator_count = 0
+        elif is_non_event_separator(line) and seen_cast is not None:
+            separator_count += 1
+        else:
+            seen_cast = None
+            separator_count = 0
+    return warnings
 
 
 def parse_damage_life_unit(lines: list[str], index: int) -> tuple[dict, int] | None:
@@ -2073,6 +2176,38 @@ def emblem_summary_line(names: list[str]) -> str | None:
     """Render emblems as a player-state line when Arena exposes emblem objects."""
     phrase = grouped_name_phrase(names)
     return f"Emblems: {phrase}" if phrase else None
+
+
+def engine_keyword_summary(
+    abilities: list[dict],
+    keyword_names: dict[int, str],
+    important_keywords: set[str] | None = None,
+) -> list[str]:
+    """Return important engine-exposed keywords from object uniqueAbilities."""
+    important_keywords = important_keywords or {
+        "deathtouch",
+        "double strike",
+        "first strike",
+        "flying",
+        "haste",
+        "hexproof",
+        "indestructible",
+        "lifelink",
+        "menace",
+        "protection",
+        "reach",
+        "trample",
+        "vigilance",
+        "ward",
+    }
+    names = []
+    for ability in abilities or []:
+        name = keyword_names.get(ability.get("grpId"))
+        if not name:
+            continue
+        if any(keyword in name for keyword in important_keywords) and name not in names:
+            names.append(name)
+    return names
 
 
 def ownership_summary_part(controller_label: str, owner_label_text: str) -> str | None:
@@ -2578,6 +2713,7 @@ def new_match_record(number: int, match_id: str, lines: list[str]) -> dict:
         "debug_seen_objects": set(),
         "choice_events": [], "target_events": [], "trigger_events": [],
         "library_events": [],
+        "object_history": defaultdict(list),
         "has_result": False, "saw_postgame_payload": False,
         "postgame_hint": None, "finalized": False,
     }
@@ -2593,8 +2729,10 @@ def cleaned_transcript_lines(lines: list[str]) -> list[str]:
     return remove_redundant_match_winner_lines(
         combine_adjacent_attack_lines(
             combine_duplicate_transcript_lines(
-                move_copy_resolves_after_revealed_returns(
-                    combine_repeated_damage_life_sequences(lines)
+                remove_near_duplicate_cast_lines(
+                    move_copy_resolves_after_revealed_returns(
+                        combine_repeated_damage_life_sequences(lines)
+                    )
                 )
             )
         )
@@ -3013,6 +3151,7 @@ def archived_transcript_matches(db_path: Path) -> list[dict]:
                 "target_events": [],
                 "trigger_events": [],
                 "library_events": [],
+                "object_history": defaultdict(list),
                 "has_result": bool(has_result),
                 "saw_postgame_payload": False,
                 "postgame_hint": None,
@@ -3032,6 +3171,8 @@ def extract_game_plays(
     debug_targets: bool = False,
     debug_triggers: bool = False,
     debug_library: bool = False,
+    debug_objects: set[int] | None = None,
+    diagnostics: bool = False,
     nth_from_start: int | None = None,
     last_games: int | None = None,
     first_games: int | None = None,
@@ -3082,6 +3223,7 @@ def extract_game_plays(
     commander_damage = Counter()
     player_counters = Counter()
     object_counters = defaultdict(Counter)
+    keyword_choices_by_source = {}
     persistent_annotations = {}
     known_targets_by_source = defaultdict(list)
     known_target_names_by_source = defaultdict(list)
@@ -3105,6 +3247,7 @@ def extract_game_plays(
     skipping_duplicate_match = False
     live_archived_match_ids = set()
     debug_grp_ids = debug_grp_ids or set()
+    debug_objects = debug_objects or set()
     library_authoritative_counts = {}
     library_inferred_counts = {}
     library_snapshot_changes = []
@@ -3239,6 +3382,19 @@ def extract_game_plays(
             return
         if "InventoryInfo" in root or "UpdatedGraphs" in root:
             current_match_record["saw_postgame_payload"] = True
+        reason = str(root.get("reason") or root.get("Reason") or "")
+        if reason:
+            folded_reason = reason.casefold()
+            if "closed by remote" in folded_reason and not current_match_record.get("postgame_hint"):
+                current_match_record["saw_postgame_payload"] = True
+                current_match_record["postgame_hint"] = (
+                    "Network log says the match connection was closed by the remote end."
+                )
+            elif "matchmanager.reset" in folded_reason and not current_match_record.get("postgame_hint"):
+                current_match_record["saw_postgame_payload"] = True
+                current_match_record["postgame_hint"] = (
+                    "Network log says MatchManager reset the match connection."
+                )
         courses = root.get("Courses") or []
         if courses:
             current_match_record["saw_postgame_payload"] = True
@@ -3334,6 +3490,7 @@ def extract_game_plays(
             commander_damage,
             player_counters,
             object_counters,
+            keyword_choices_by_source,
             persistent_annotations,
             known_targets_by_source,
             known_target_names_by_source,
@@ -3717,6 +3874,24 @@ def extract_game_plays(
             or f"instance {instance_id}"
         )
 
+    def record_object_history(instance_id, kind, summary, payload=None):
+        """Store compact lifecycle notes for --debug-object instance tracking."""
+        if (
+            current_match_record is None
+            or instance_id is None
+            or int(instance_id) not in debug_objects
+        ):
+            return
+        current_match_record["object_history"][int(instance_id)].append(
+            {
+                "event_index": event_index,
+                "turn": current_turn,
+                "kind": kind,
+                "summary": summary,
+                "payload": payload,
+            }
+        )
+
     def target_label(target_id):
         """Render a combat or spell target in object case when it is a player."""
         if target_id in (1, 2):
@@ -4047,16 +4222,25 @@ def extract_game_plays(
         power_toughness = power_toughness_summary(obj)
         if power_toughness:
             modifier_parts.append(power_toughness)
-        modifier_parts.extend(
-            counter_summary_parts(
-                object_counters[instance_id],
-                counter_type_names,
-                current_power=current_power,
-                current_toughness=current_toughness,
-                printed_power=printed_power,
-                printed_toughness=printed_toughness,
-            )
+        modifier_parts.extend(engine_keyword_summary(obj.get("uniqueAbilities") or [], keyword_value_names))
+        counter_parts = counter_summary_parts(
+            object_counters[instance_id],
+            counter_type_names,
+            current_power=current_power,
+            current_toughness=current_toughness,
+            printed_power=printed_power,
+            printed_toughness=printed_toughness,
         )
+        modifier_parts.extend(counter_parts)
+        effect_modifier = effect_power_toughness_modifier(
+            current_power,
+            current_toughness,
+            printed_power,
+            printed_toughness,
+            counter_parts,
+        )
+        if effect_modifier:
+            modifier_parts.append(effect_modifier)
         modifier_parts.extend(attachment_summary_parts(attachments_for_permanent(instance_id)))
         controller = obj.get("controllerSeatId")
         owner = obj.get("ownerSeatId")
@@ -4560,6 +4744,13 @@ def extract_game_plays(
                     f"{source} has dealt {amount} commander damage to "
                     f"{object_pronoun(owner_label(target_seat))}"
                 )
+        for source_id, choice in sorted(
+            keyword_choices_by_source.items(),
+            key=lambda item: item[1]["source"],
+        ):
+            if not is_battlefield_zone((objects.get(source_id) or {}).get("zoneId")):
+                continue
+            lines.append(f"{choice['source']} chose {choice['text']} from an Arena keyword prompt")
         return lines
 
     def flush_pending_stack_cast(instance_id):
@@ -5162,6 +5353,12 @@ def extract_game_plays(
         source = prompt.get("sourceName") or card_label(source_id)
         chooser = owner_label(prompt.get("sourceOwner") or object_owner(source_id))
         value_text = phrase_keyword_choice_values(selected_values, keyword_value_names)
+        keyword_choices_by_source[source_id] = {
+            "source": source,
+            "chooser": chooser,
+            "values": tuple(selected_values),
+            "text": value_text,
+        }
         key = (
             current_match,
             payload.get("gameStateId"),
@@ -5635,6 +5832,12 @@ def extract_game_plays(
         for obj in gsm.get("gameObjects", []):
             if obj.get("instanceId") is not None:
                 objects[obj["instanceId"]] = obj
+                record_object_history(
+                    obj["instanceId"],
+                    "object",
+                    f"{object_label_from_object(obj) or card_name_from_grp(obj.get('grpId')) or 'object'} in {zone_label(obj.get('zoneId'))}",
+                    {"gameStateId": gsm.get("gameStateId"), "object": obj},
+                )
                 if obj.get("type") == "GameObjectType_Ability":
                     source_name = card_name_from_grp(obj.get("objectSourceGrpId"))
                     if not source_name and obj.get("parentId") is not None:
@@ -5695,6 +5898,12 @@ def extract_game_plays(
                             known_target_names_by_source[source_id].append(name)
 
         for deleted_id in gsm.get("diffDeletedInstanceIds") or []:
+            record_object_history(
+                deleted_id,
+                "delete",
+                f"{card_label(deleted_id)} deleted from game state",
+                {"gameStateId": gsm.get("gameStateId")},
+            )
             objects.pop(deleted_id, None)
 
     def emit_match_results(gsm):
@@ -5744,6 +5953,13 @@ def extract_game_plays(
         """Deduplicate one Arena annotation and route it to the right handler."""
         if debug_annotations:
             record_debug(ann)
+        for object_id in [ann.get("affectorId"), *(ann.get("affectedIds") or [])]:
+            record_object_history(
+                object_id,
+                "annotation",
+                ",".join(ann.get("type") or []),
+                {"gameStateId": gsm.get("gameStateId"), "annotation": ann},
+            )
 
         key = annotation_key(ann, gsm, msg)
         if key in seen_annotations:
@@ -6218,6 +6434,31 @@ def extract_game_plays(
                         file=sys.stderr,
                     )
 
+    if debug_objects:
+        print("\nDebug object histories:", file=sys.stderr)
+        for match in selected_matches:
+            print(
+                f"\n===== OBJECT HISTORY GAME {match['number']}: MATCH {match['match_id']} =====",
+                file=sys.stderr,
+            )
+            for object_id in sorted(debug_objects):
+                history = match.get("object_history", {}).get(object_id, [])
+                print(f"\n--- object {object_id} ---", file=sys.stderr)
+                if not history:
+                    print("No history recorded for this object in selected game.", file=sys.stderr)
+                    continue
+                for item in history:
+                    print(
+                        f"event={item['event_index']} turn={item['turn']} "
+                        f"{item['kind']}: {item['summary']}",
+                        file=sys.stderr,
+                    )
+                    if item.get("payload"):
+                        print(
+                            json.dumps(item["payload"], sort_keys=True, separators=(",", ":"))[:600],
+                            file=sys.stderr,
+                        )
+
     if debug_choices:
         print("\nDebug choice-like GRE/gameState events:", file=sys.stderr)
         for match in selected_matches:
@@ -6237,7 +6478,21 @@ def extract_game_plays(
                 print(
                     json.dumps(event["payload"], indent=2, sort_keys=True),
                     file=sys.stderr,
-                )
+                    )
+
+    if diagnostics:
+        print("\nTranscript diagnostics:", file=sys.stderr)
+        for match in selected_matches:
+            warnings = transcript_diagnostics(cleaned_transcript_lines(match["lines"]))
+            print(
+                f"\n===== DIAGNOSTICS GAME {match['number']}: MATCH {match['match_id']} =====",
+                file=sys.stderr,
+            )
+            if not warnings:
+                print("No suspicious transcript artifacts found.", file=sys.stderr)
+                continue
+            for warning in warnings:
+                print(warning, file=sys.stderr)
 
     if debug_targets:
         print("\nDebug target-like GRE/gameState events:", file=sys.stderr)
@@ -6430,6 +6685,19 @@ No pip install step is required; this script only uses Python's standard library
         action="store_true",
         help="advanced: print library count changes, inferred deltas, and drift warnings",
     )
+    parser.add_argument(
+        "--debug-object",
+        action="append",
+        type=int,
+        default=[],
+        metavar="INSTANCE_ID",
+        help="advanced: print lifecycle notes for a specific Arena object instance id",
+    )
+    parser.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="print suspicious transcript artifacts such as raw ids or duplicate casts to stderr",
+    )
     selection_group = parser.add_mutually_exclusive_group()
     selection_group.add_argument(
         "--all",
@@ -6605,6 +6873,8 @@ No pip install step is required; this script only uses Python's standard library
         debug_targets=args.debug_targets,
         debug_triggers=args.debug_triggers,
         debug_library=args.debug_library,
+        debug_objects=set(args.debug_object),
+        diagnostics=args.diagnostics,
         nth_from_start=args.select,
         last_games=args.last,
         first_games=args.first,

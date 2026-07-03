@@ -40,6 +40,8 @@ from mtga_extract_games import (
     damage_mark_suffix,
     default_archive_db_path,
     emblem_summary_line,
+    engine_keyword_summary,
+    effect_power_toughness_modifier,
     find_card_database,
     is_hidden_arena_object,
     find_player_logs,
@@ -101,6 +103,7 @@ from mtga_extract_games import (
     has_live_selection_conflict,
     modifier_summary_suffix,
     remove_redundant_match_winner_lines,
+    remove_near_duplicate_cast_lines,
     resolve_stack_name,
     replace_base_cast_name,
     resolve_input_paths,
@@ -120,6 +123,7 @@ from mtga_extract_games import (
     colorize_land_names,
     should_color_output,
     transcript_line_perspective,
+    transcript_diagnostics,
     transcript_line_style,
 )
 
@@ -326,6 +330,41 @@ class WordingTests(unittest.TestCase):
                 "Winner: Opponent",
             ],
         )
+
+    def test_near_duplicate_cast_lines_are_removed(self):
+        """Check repeated cast echoes around phase headings are suppressed."""
+        self.assertEqual(
+            remove_near_duplicate_cast_lines(
+                [
+                    "I cast Steel Seraph",
+                    "",
+                    "-- Combat - beginning --",
+                    "I cast Steel Seraph",
+                    "I choose flying for Steel Seraph (keyword)",
+                ]
+            ),
+            [
+                "I cast Steel Seraph",
+                "",
+                "-- Combat - beginning --",
+                "I choose flying for Steel Seraph (keyword)",
+            ],
+        )
+
+    def test_transcript_diagnostics_find_suspicious_artifacts(self):
+        """Check diagnostics flag raw ids and near duplicate casts."""
+        warnings = transcript_diagnostics(
+            [
+                "I cast Steel Seraph",
+                "-- Combat - beginning --",
+                "I cast Steel Seraph",
+                "grpId 2 trigger exiles Blind Obedience",
+                "Library: -1 cards",
+            ]
+        )
+        self.assertTrue(any("near-duplicate cast" in warning for warning in warnings))
+        self.assertTrue(any("raw grpId leaked" in warning for warning in warnings))
+        self.assertTrue(any("negative library count" in warning for warning in warnings))
 
     def test_repeated_damage_life_sequences_are_combined(self):
         """Check repeated damage life sequences are combined."""
@@ -1482,6 +1521,21 @@ class WordingTests(unittest.TestCase):
                 printed_toughness=1,
             ),
             ["+4/+4 from counters"],
+        )
+        self.assertEqual(
+            effect_power_toughness_modifier(5, 5, 1, 1, ["+2/+2 from counters"]),
+            "+2/+2 from effects",
+        )
+        self.assertIsNone(effect_power_toughness_modifier(3, 3, 1, 1, ["+2/+2 from counters"]))
+
+    def test_engine_keyword_summary_uses_exposed_abilities(self):
+        """Check current object keywords come from Arena ability ids."""
+        self.assertEqual(
+            engine_keyword_summary(
+                [{"grpId": 8}, {"grpId": 12}, {"grpId": 999}],
+                {8: "flying", 12: "lifelink", 999: "draw a card"},
+            ),
+            ["flying", "lifelink"],
         )
 
     def test_board_token_and_power_toughness_wording(self):
