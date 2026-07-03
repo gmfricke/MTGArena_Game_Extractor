@@ -53,7 +53,10 @@ from mtga_extract_games import (
     library_delta_for_zone_transfer,
     library_movement_description,
     life_change_group_source,
+    mana_cost_amount,
+    mana_cost_text_amount,
     mana_options_from_ability_texts,
+    mana_pool_count,
     mana_restriction_from_ability_texts,
     move_copy_resolves_after_revealed_returns,
     object_pronoun,
@@ -93,7 +96,9 @@ from mtga_extract_games import (
     phrase_zone_change,
     find_target_like_paths,
     format_available_mana_summary,
+    format_cast_mana_note,
     format_card_mana_cost,
+    format_mana_cost_entries,
     format_mana_pool,
     format_path_diagnostics,
     format_game_type,
@@ -1402,6 +1407,16 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(format_card_mana_cost("o7"), "7")
         self.assertEqual(format_card_mana_cost("o2oW"), "2W")
         self.assertEqual(format_card_mana_cost("o5oWoWoW"), "5WWW")
+        spell_cost = [
+            {"color": ["ManaColor_Generic"], "count": 1},
+            {"color": ["ManaColor_Black"], "count": 1},
+        ]
+        self.assertEqual(format_mana_cost_entries(spell_cost), "1B")
+        self.assertEqual(mana_cost_amount(spell_cost), 2)
+        self.assertEqual(format_cast_mana_note("1B", 2, 5), " [spent 1B; remaining 3 mana]")
+        self.assertEqual(format_cast_mana_note("1B", 2, None), " [spent 1B]")
+        self.assertEqual(mana_cost_text_amount("3GU"), 5)
+        self.assertEqual(mana_pool_count([{"color": "ManaColor_Green", "count": 2}]), 2)
         self.assertEqual(land_mana_options("Wooded Foothills"), set())
         self.assertEqual(land_mana_options("Battlefield Forge"), {1, 4})
         metadata = {

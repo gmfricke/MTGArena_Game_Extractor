@@ -1814,6 +1814,7 @@ def cast_line_identity(line: str) -> tuple[str, str] | None:
     actor, spell = match.groups()
     # Drop suffixes that are derived from later state, not spell identity.
     spell = spell.split(" targeting ", 1)[0]
+    spell = spell.split(" [spent ", 1)[0]
     spell = spell.split("; commander cast", 1)[0]
     return actor, spell
 
@@ -2240,6 +2241,7 @@ def base_cast_name(cast_text: str) -> str:
     """Strip transcript suffixes so delayed casts can be matched by spell name."""
     return (
         cast_text.split(" targeting ", 1)[0]
+        .split(" [spent ", 1)[0]
         .split(" from command zone", 1)[0]
         .split(";", 1)[0]
     )
@@ -2525,6 +2527,74 @@ def mana_amount_from_pool_entry(entry: dict) -> int:
         return 1
 
 
+def mana_cost_amount(cost_entries: list[dict] | None) -> int:
+    """Return the total mana represented by one Arena spell manaCost list."""
+    amount = 0
+    for entry in cost_entries or []:
+        try:
+            amount += int(entry.get("count") or 0)
+        except (TypeError, ValueError):
+            pass
+    return amount
+
+
+def format_mana_cost_entries(cost_entries: list[dict] | None) -> str | None:
+    """Format an Arena spell manaCost list as compact spent-mana text."""
+    if not cost_entries:
+        return None
+    generic = 0
+    symbols = []
+    order = [
+        ("ManaColor_White", "W"),
+        ("ManaColor_Blue", "U"),
+        ("ManaColor_Black", "B"),
+        ("ManaColor_Red", "R"),
+        ("ManaColor_Green", "G"),
+        ("ManaColor_Colorless", "C"),
+    ]
+    symbol_by_color = dict(order)
+    for entry in cost_entries:
+        colors = entry.get("color") or []
+        try:
+            count = int(entry.get("count") or 0)
+        except (TypeError, ValueError):
+            count = 0
+        if "ManaColor_Generic" in colors:
+            generic += count
+            continue
+        for color, symbol in order:
+            if color in colors:
+                symbols.extend([symbol] * max(count, 0))
+                break
+        else:
+            for color in colors:
+                if color in symbol_by_color:
+                    symbols.extend([symbol_by_color[color]] * max(count, 0))
+                    break
+    text = f"{generic if generic else ''}{''.join(symbols)}"
+    return text or None
+
+
+def format_cast_mana_note(spent_text: str | None, cost_amount: int = 0, available_before: int | None = None) -> str:
+    """Format the optional cast-line suffix for spent and remaining mana."""
+    if not spent_text:
+        return ""
+    if available_before is None:
+        return f" [spent {spent_text}]"
+    remaining = max(int(available_before) - int(cost_amount or 0), 0)
+    return f" [spent {spent_text}; remaining {remaining} mana]"
+
+
+def mana_cost_text_amount(cost_text: str | None) -> int:
+    """Return a conservative mana amount from formatted mana text like 2G or WWW."""
+    if not cost_text:
+        return 0
+    amount = 0
+    for part in re.findall(r"\d+|[WUBRGC]", cost_text):
+        amount += int(part) if part.isdigit() else 1
+    return amount
+
+
 def mana_note_from_specs(option: dict) -> tuple[str | None, str | None]:
     """Split Arena mana specs into real restrictions and source-only tags."""
     ignored_specs = {"ManaSpecType_Predictive", "ManaSpecType_FromTreasure"}
@@ -2579,6 +2649,11 @@ def format_mana_pool(mana_pool: list[dict] | None) -> str | None:
             tag_parts.append(f"{prefix}{amount} {symbol} [{source_tag}]")
         parts.append(f"source tags: {', '.join(tag_parts)}")
     return f"Floating mana: {'; '.join(parts)}" if parts else None
+
+
+def mana_pool_count(mana_pool: list[dict] | None) -> int:
+    """Count floating mana entries from Arena player state."""
+    return sum(mana_amount_from_pool_entry(entry) for entry in mana_pool or [])
 
 
 def format_available_mana_summary(
@@ -3213,6 +3288,7 @@ def extract_game_plays(
     ability_trigger_ids = set()
     ability_source_names = {}
     pending_stack_casts = {}
+    cast_mana_by_instance = {}
     pending_mill_group = None
     pending_life_groups = {}
     pending_death_events = []
@@ -3484,6 +3560,7 @@ def extract_game_plays(
             stack_display_names,
             ability_source_names,
             pending_stack_casts,
+            cast_mana_by_instance,
             pending_life_groups,
             active_effects,
             commander_grps_by_seat,
@@ -3831,6 +3908,11 @@ def extract_game_plays(
             pending_stack_casts[new_id] = pending_stack_casts.pop(orig_id)
             if pending_stack_casts[new_id].get("source_id") == orig_id:
                 pending_stack_casts[new_id]["source_id"] = new_id
+        if orig_id in cast_mana_by_instance:
+            # Cast mana is learned from legal action messages before the
+            # ZoneTransfer CastSpell event. Carry it across the same id changes
+            # as pending stack casts.
+            cast_mana_by_instance[new_id] = cast_mana_by_instance.pop(orig_id)
         if orig_id in object_counters:
             # Counter annotations are tied to instance ids. Carry them across
             # object id changes so board-state grouping remains accurate.
@@ -4013,6 +4095,93 @@ def extract_game_plays(
         if choice_text:
             text = f"{text} ({choice_text})"
         return text
+
+    def cast_action_for_instance(instance_id):
+        """Return Arena's legal cast action for a stack object when still available."""
+        for action_wrapper in current_actions:
+            action = action_wrapper.get("action") or action_wrapper
+            if action.get("actionType") == "ActionType_Cast" and action.get("instanceId") == instance_id:
+                return action
+        return None
+
+    def remember_cast_mana_actions():
+        """Cache legal cast-action mana before the later stack event consumes it."""
+        for action_wrapper in current_actions:
+            action = action_wrapper.get("action") or action_wrapper
+            if action.get("actionType") != "ActionType_Cast":
+                continue
+            instance_id = action.get("instanceId")
+            if instance_id is None:
+                continue
+            spent_text = format_mana_cost_entries(action.get("manaCost"))
+            if not spent_text:
+                continue
+            seat = (
+                action_wrapper.get("seatId")
+                or action.get("seatId")
+                or object_controller(instance_id)
+                or action.get("controllerSeatId")
+            )
+            available_before = available_mana_count_from_actions(seat) if seat is not None else None
+            cast_mana_by_instance[instance_id] = {
+                "spent_text": spent_text,
+                "cost_amount": mana_cost_amount(action.get("manaCost")),
+                "available_before": available_before,
+                "seat": seat,
+                "name": card_label(instance_id),
+            }
+
+    def cast_mana_suffix(instance_id, seat, spell_name=None):
+        """Describe mana spent and estimated remaining mana for one cast action."""
+        obj = objects.get(instance_id, {})
+        metadata = metadata_for_object(obj)
+        if card_is_land(obj, metadata):
+            return ""
+        action = cast_action_for_instance(instance_id)
+        if action:
+            spent_text = format_mana_cost_entries(action.get("manaCost"))
+            if spent_text:
+                cost_amount = mana_cost_amount(action.get("manaCost"))
+                remaining = remaining_mana_count(seat)
+                available = None if remaining is None else remaining + cost_amount
+                return format_cast_mana_note(spent_text, cost_amount, available)
+        cached = cast_mana_by_instance.get(instance_id)
+        if cached:
+            cached_name = cached.get("name")
+            expected_name = base_cast_name(spell_name or "")
+            if (
+                cached_name
+                and expected_name
+                and cached_name != expected_name
+                and not str(cached_name).startswith(("instance ", "grpId "))
+            ):
+                return ""
+            remaining = remaining_mana_count(seat if seat is not None else cached.get("seat"))
+            if remaining is not None:
+                return format_cast_mana_note(
+                    cached.get("spent_text"),
+                    cached.get("cost_amount", 0),
+                    int(cached.get("cost_amount") or 0) + remaining,
+                )
+            return format_cast_mana_note(
+                cached.get("spent_text"),
+                cached.get("cost_amount", 0),
+                cached.get("available_before"),
+            )
+        cost_text = format_card_mana_cost((metadata or {}).get("mana_cost"))
+        if cost_text:
+            available = None
+            if seat is not None:
+                remaining = remaining_mana_count(seat)
+                if remaining is not None:
+                    available = remaining + mana_cost_text_amount(cost_text)
+            return format_cast_mana_note(cost_text, mana_cost_text_amount(cost_text), available)
+        return ""
+
+    def cast_text_with_mana(instance_id, text, seat):
+        """Append spell targets, modal text, and Arena-exposed mana spend details."""
+        cast_text = cast_text_with_targets(instance_id, text)
+        return f"{cast_text}{cast_mana_suffix(instance_id, seat, cast_text)}"
 
     def source_label(instance_id):
         """Return a source card name only when it is more useful than a raw id."""
@@ -4361,6 +4530,11 @@ def extract_game_plays(
 
     def available_mana_line_from_actions(seat):
         """Summarize currently activatable mana sources from Arena legal actions."""
+        total, known_options, unknown_count, restricted = available_mana_snapshot_from_actions(seat)
+        return format_available_mana_summary(total, known_options, unknown_count, restricted)
+
+    def available_mana_snapshot_from_actions(seat):
+        """Return available mana details from Arena legal mana actions."""
         total = 0
         unknown_count = 0
         known_options = []
@@ -4404,10 +4578,25 @@ def extract_game_plays(
                 known_options.append(source_options)
             else:
                 unknown_count += best_amount
-        return format_available_mana_summary(total, known_options, unknown_count, restricted)
+        return total, known_options, unknown_count, restricted
+
+    def available_mana_count_from_actions(seat):
+        """Return a conservative count of mana sources currently exposed as activatable."""
+        total, _known_options, unknown_count, restricted = available_mana_snapshot_from_actions(seat)
+        restricted_total = 0
+        for item in restricted:
+            match = re.search(r" (\d+) ", item)
+            if match:
+                restricted_total += int(match.group(1))
+        return total + unknown_count + restricted_total
 
     def available_mana_line_from_board(seat):
         """Fallback mana summary from untapped permanents controlled by this seat."""
+        total, known_options, unknown_count, restricted = available_mana_snapshot_from_board(seat)
+        return format_available_mana_summary(total, known_options, unknown_count, restricted)
+
+    def available_mana_snapshot_from_board(seat):
+        """Return board-derived mana details from untapped visible permanents."""
         battlefield_zone_ids = zone_ids_by_type("ZoneType_Battlefield")
         total = 0
         unknown_count = 0
@@ -4442,7 +4631,26 @@ def extract_game_plays(
                 known_options.append(options)
             else:
                 unknown_count += 1
-        return format_available_mana_summary(total, known_options, unknown_count, restricted)
+        return total, known_options, unknown_count, restricted
+
+    def available_mana_count_from_board(seat):
+        """Return a rough count of untapped visible mana sources on the board."""
+        total, _known_options, unknown_count, restricted = available_mana_snapshot_from_board(seat)
+        restricted_total = 0
+        for item in restricted:
+            match = re.search(r" (\d+) ", item)
+            if match:
+                restricted_total += int(match.group(1))
+        return total + unknown_count + restricted_total
+
+    def remaining_mana_count(seat):
+        """Estimate currently available mana after an event has updated state."""
+        if seat is None:
+            return None
+        action_count = available_mana_count_from_actions(seat)
+        board_count = available_mana_count_from_board(seat)
+        floating_count = mana_pool_count(players.get(seat, {}).get("manaPool"))
+        return max(action_count, board_count) + floating_count
 
     def available_mana_line(seat):
         """Prefer Arena legal actions, falling back to board-derived mana sources."""
@@ -4758,7 +4966,11 @@ def extract_game_plays(
         pending = pending_stack_casts.pop(instance_id, None)
         if pending:
             emitted_cast_instance_ids.add(instance_id)
-            text = cast_text_with_targets(pending.get("source_id", instance_id), pending["text"])
+            text = cast_text_with_mana(
+                pending.get("source_id", instance_id),
+                pending["text"],
+                pending.get("seat"),
+            )
             emit(phrase_player_action(pending["owner"], "cast", text))
 
     def update_pending_stack_cast_name(instance_id, name):
@@ -4814,7 +5026,7 @@ def extract_game_plays(
             return
         actor = owner_label(actor_seat)
         emitted_cast_instance_ids.add(instance_id)
-        emit(phrase_player_action(actor, "cast", name))
+        emit(phrase_player_action(actor, "cast", cast_text_with_mana(instance_id, name, actor_seat)))
 
     def flush_pending_cast_for_affector(affector_id):
         """Emit delayed source casts before their triggered effects are narrated."""
@@ -5020,7 +5232,8 @@ def extract_game_plays(
             cast_text = cast_text_with_targets(iid, cast_base_text)
             # See PlayLand above: the caster is the current controller, not
             # necessarily the owner of the source zone or card.
-            owner = owner_label(object_controller(iid)) if object_controller(iid) else owner
+            caster_seat = object_controller(iid)
+            owner = owner_label(caster_seat) if caster_seat else owner
             if is_low_fidelity_update_without_turn(gsm) or cast_text == cast_base_text:
                 # TargetSpec annotations can arrive just after CastSpell in
                 # the same stack sequence. Delay targetless cast lines until
@@ -5028,12 +5241,13 @@ def extract_game_plays(
                 # TargetSpec so cards like Fading Hope can name their target.
                 pending_stack_casts[iid] = {
                     "owner": owner,
+                    "seat": caster_seat,
                     "text": cast_base_text,
                     "source_id": iid,
                 }
             else:
                 emitted_cast_instance_ids.add(iid)
-                emit(phrase_player_action(owner, "cast", cast_text))
+                emit(phrase_player_action(owner, "cast", f"{cast_text}{cast_mana_suffix(iid, caster_seat, cast_text)}"))
         elif category == "Resolve":
             flush_pending_event_groups()
             if detail_name and not detail_name.startswith("grpId "):
@@ -5053,7 +5267,8 @@ def extract_game_plays(
                 # named spells do not appear to resolve from nowhere.
                 actor = owner_label(object_controller(iid)) if object_controller(iid) else owner
                 emitted_cast_instance_ids.add(iid)
-                emit(phrase_player_action(actor, "cast", cast_text_with_targets(iid, name)))
+                actor_seat = object_controller(iid)
+                emit(phrase_player_action(actor, "cast", cast_text_with_mana(iid, name, actor_seat)))
             effect_text = active_effect_for_resolved_permanent(name, owner)
             if effect_text:
                 add_active_effect(("resolved_effect", iid, name), effect_text, source_id=iid)
@@ -6277,6 +6492,7 @@ def extract_game_plays(
                             last_game_state_id = game_state_id
 
                         current_actions = gsm.get("actions") or []
+                        remember_cast_mana_actions()
                         update_state(gsm)
                         if known_local_seat is None:
                             known_local_seat = infer_local_seat()
