@@ -46,6 +46,7 @@ from mtga_extract_games import (
     load_ability_texts,
     load_enum_value_names,
     load_grp_id_to_metadata,
+    load_keyword_value_names,
     land_mana_options,
     library_delta_for_zone_transfer,
     library_movement_description,
@@ -73,6 +74,8 @@ from mtga_extract_games import (
     phrase_life_change_group,
     phrase_life_change_summary,
     phrase_library_count,
+    phrase_keyword_choice_value,
+    phrase_keyword_choice_values,
     phrase_mulligan,
     phrase_move_to_zone,
     phrase_mill_summary,
@@ -1169,6 +1172,12 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(phrase_choice_value("creature type", 1, "Angel"), "Angel")
         self.assertEqual(phrase_choice_value("creature type", 25, "Elemental"), "Elemental")
         self.assertEqual(phrase_choice_value("mana value parity", 0, "even"), "even")
+        self.assertEqual(phrase_keyword_choice_value(8, "flying"), "flying")
+        self.assertEqual(phrase_keyword_choice_value(99, None), "unknown keyword 99")
+        self.assertEqual(
+            phrase_keyword_choice_values([8, 12], {8: "flying", 12: "lifelink"}),
+            "flying; lifelink",
+        )
 
     def test_card_type_choices_use_arena_enum_values(self):
         """Check card-type choices use Arena's CardType enum values."""
@@ -1221,6 +1230,30 @@ class WordingTests(unittest.TestCase):
                 {25: "Elemental", 83: "Power-Plant"},
             )
         self.assertEqual(clean_localized_enum_name("<nobr>Assembly-Worker</nobr>"), "Assembly-Worker")
+
+    def test_keyword_loader_reads_intrinsic_ability_names(self):
+        """Check StaticList_Keywords ids are decoded from intrinsic ability names."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            carddb = Path(tmpdir) / "carddb.mtga"
+            con = sqlite3.connect(carddb)
+            cur = con.cursor()
+            cur.execute("CREATE TABLE Abilities(Id INT, TextId INT, IsIntrinsicAbility INT)")
+            cur.execute("CREATE TABLE Localizations_enUS(LocId INT, Formatted INT, Loc TEXT)")
+            cur.executemany(
+                "INSERT INTO Abilities VALUES (?, ?, ?)",
+                [(8, 100, 1), (12, 101, 1), (200, 102, 0)],
+            )
+            cur.executemany(
+                "INSERT INTO Localizations_enUS VALUES (?, ?, ?)",
+                [(100, 1, "Flying"), (101, 1, "Lifelink."), (102, 1, "Not a keyword")],
+            )
+            con.commit()
+            con.close()
+
+            names = load_keyword_value_names(carddb)
+            self.assertEqual(names[8], "flying")
+            self.assertEqual(names[12], "lifelink")
+            self.assertNotEqual(names.get(200), "not a keyword")
 
     def test_card_metadata_loader_reads_types_and_resource_mechanics(self):
         """Check card metadata loader reads types and resource mechanics."""

@@ -43,6 +43,18 @@ BASE_CHOICE_VALUE_NAMES = {
     14: {0: "even", 1: "odd"},
 }
 
+# Arena SelectN keyword prompts use numeric ids that correspond to intrinsic
+# ability ids in the card database. This fallback covers common keywords if a
+# future database omits or renames the localization rows.
+BASE_KEYWORD_VALUE_NAMES = {
+    6: "first strike",
+    8: "flying",
+    12: "lifelink",
+    14: "trample",
+    15: "vigilance",
+    104: "indestructible",
+}
+
 # Observed on Skithiryx, the Blight Dragon. Arena records its combat damage to
 # players as damage with markDamage=0 instead of ModifiedLife.
 INFECT_ABILITY_GRP_IDS = {91}
@@ -343,6 +355,39 @@ def load_enum_value_names(carddb_path: Path, enum_type: str) -> dict[int, str]:
         clean_name = clean_localized_enum_name(name)
         if clean_name and int(value) not in mapping:
             mapping[int(value)] = clean_name
+    con.close()
+    return mapping
+
+
+def load_keyword_value_names(carddb_path: Path) -> dict[int, str]:
+    """Load SelectN keyword ids from intrinsic ability localizations in CARDDB."""
+    con = sqlite3.connect(carddb_path)
+    cur = con.cursor()
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = {row[0] for row in cur.fetchall()}
+    if not {"Abilities", "Localizations_enUS"}.issubset(tables):
+        con.close()
+        return dict(BASE_KEYWORD_VALUE_NAMES)
+
+    cur.execute(
+        """
+        SELECT a.Id, l.Loc
+        FROM Abilities a
+        JOIN Localizations_enUS l
+          ON a.TextId = l.LocId
+        WHERE l.Formatted = 1
+          AND a.IsIntrinsicAbility = 1
+          AND l.Loc IS NOT NULL
+        """
+    )
+    mapping = dict(BASE_KEYWORD_VALUE_NAMES)
+    for ability_id, name in cur.fetchall():
+        clean_name = clean_localized_enum_name(name)
+        if not clean_name:
+            continue
+        # Keyword choices are game terms rather than card names, so render them
+        # lower-case in transcript sentences.
+        mapping[int(ability_id)] = clean_name.rstrip(".").casefold()
     con.close()
     return mapping
 
@@ -2493,6 +2538,18 @@ def phrase_choice_value(domain_text: str, value: int, decoded_value: str | None)
     return f"unknown {domain_text} {value}"
 
 
+def phrase_keyword_choice_value(value: int, decoded_value: str | None) -> str:
+    """Render Arena StaticList_Keywords choices without hiding unknown ids."""
+    if decoded_value:
+        return decoded_value
+    return f"unknown keyword {value}"
+
+
+def phrase_keyword_choice_values(values: list[int], keyword_names: dict[int, str]) -> str:
+    """Render one or more keyword choice ids in deterministic transcript style."""
+    return "; ".join(phrase_keyword_choice_value(value, keyword_names.get(value)) for value in values)
+
+
 def phrase_incomplete_game_notice(postgame_hint: str | None = None) -> list[str]:
     """Explain that Arena returned postgame data without final GRE results."""
     lines = [
@@ -2986,6 +3043,7 @@ def extract_game_plays(
     show_phases: bool = True,
     live: bool = False,
     enum_value_names: dict[str, dict[int, str]] | None = None,
+    keyword_value_names: dict[int, str] | None = None,
     card_metadata: dict[int, dict] | None = None,
     ability_texts: dict[int, str] | None = None,
     color_mode: str = "never",
@@ -3052,6 +3110,7 @@ def extract_game_plays(
     library_snapshot_changes = []
     current_gsm_library_deltas = Counter()
     current_gsm_library_events = []
+    pending_keyword_selects = {}
 
     debug_counts = Counter()
     debug_samples = {}
@@ -3068,6 +3127,7 @@ def extract_game_plays(
     last_progress_at = 0.0
 
     enum_value_names = enum_value_names or {}
+    keyword_value_names = keyword_value_names or dict(BASE_KEYWORD_VALUE_NAMES)
     card_metadata = card_metadata or {}
     ability_texts = ability_texts or {}
     color_enabled = should_color_output(color_mode, sys.stdout.isatty())
@@ -3248,6 +3308,7 @@ def extract_game_plays(
         nonlocal current_game_has_commanders, known_local_seat, event_index
         nonlocal pending_mill_group, current_phase_section, emitted_phase_section
         nonlocal library_snapshot_changes, current_gsm_library_deltas, current_gsm_library_events
+        nonlocal pending_keyword_selects
 
         event_index = 0
         current_turn = None
@@ -3291,6 +3352,7 @@ def extract_game_plays(
             pending_death_events,
             library_authoritative_counts,
             library_inferred_counts,
+            pending_keyword_selects,
         )
         pending_mill_group = None
         library_snapshot_changes = []
@@ -5040,6 +5102,95 @@ def extract_game_plays(
             )
         )
 
+    def note_keyword_select_request(msg):
+        """Remember Arena keyword prompts so later SelectNResp ids can be decoded."""
+        if msg.get("type") != "GREMessageType_SelectNReq":
+            return
+        select_req = msg.get("selectNReq") or {}
+        if select_req.get("staticList") != "StaticList_Keywords":
+            return
+        response_id = msg.get("msgId")
+        source_id = select_req.get("sourceId")
+        if response_id is None or source_id is None:
+            return
+        options = [value for value in select_req.get("ids") or [] if isinstance(value, int)]
+        hot_options = [value for value in select_req.get("hotIds") or [] if isinstance(value, int)]
+        prompt = msg.get("prompt") or {}
+        prompt_parameters = prompt.get("parameters") or []
+        prompt_card_id = None
+        for parameter in prompt_parameters:
+            if parameter.get("parameterName") == "CardId":
+                prompt_card_id = parameter.get("numberValue")
+                break
+        # Store the resolved label at prompt time because the source object can
+        # leave the stack before the client response is logged.
+        pending_keyword_selects[response_id] = {
+            "gameStateId": msg.get("gameStateId"),
+            "sourceId": source_id,
+            "sourceName": card_label(source_id),
+            "sourceOwner": object_owner(source_id),
+            "options": options,
+            "hotOptions": hot_options,
+            "promptCardId": prompt_card_id,
+        }
+        if debug_choices and current_match_record is not None:
+            current_match_record["choice_events"].append(
+                {
+                    "event_index": event_index,
+                    "turn": current_turn,
+                    "gameStateId": msg.get("gameStateId"),
+                    "payload": {"greToClientMessage": msg},
+                }
+            )
+
+    def emit_keyword_select_response(root):
+        """Emit decoded keyword choices from ClientMessageType_SelectNResp blocks."""
+        payload = root.get("payload") or {}
+        if payload.get("type") != "ClientMessageType_SelectNResp":
+            return
+        response_id = payload.get("respId")
+        prompt = pending_keyword_selects.pop(response_id, None)
+        if not prompt:
+            return
+        select_resp = payload.get("selectNResp") or {}
+        selected_values = [
+            value for value in select_resp.get("ids") or [] if isinstance(value, int)
+        ]
+        if not selected_values:
+            return
+        source_id = prompt.get("sourceId")
+        source = prompt.get("sourceName") or card_label(source_id)
+        chooser = owner_label(prompt.get("sourceOwner") or object_owner(source_id))
+        value_text = phrase_keyword_choice_values(selected_values, keyword_value_names)
+        key = (
+            current_match,
+            payload.get("gameStateId"),
+            response_id,
+            source_id,
+            tuple(selected_values),
+        )
+        if key in seen_choices:
+            return
+        seen_choices.add(key)
+        flush_pending_event_groups()
+        emit(
+            phrase_player_action(
+                chooser,
+                "choose",
+                f"{value_text} for {source} (keyword)",
+                third_person="chooses",
+            )
+        )
+        if debug_choices and current_match_record is not None:
+            current_match_record["choice_events"].append(
+                {
+                    "event_index": event_index,
+                    "turn": current_turn,
+                    "gameStateId": payload.get("gameStateId"),
+                    "payload": root,
+                }
+            )
+
     def note_commander_cast(instance_id, fallback_grp_id=None):
         """Track command-zone casts as commander casts and report current tax."""
         obj = objects.get(instance_id, {})
@@ -5818,6 +5969,35 @@ def extract_game_plays(
             flush=True,
         )
 
+    def parse_json_root_from_line(first_line, file_obj):
+        """Parse one-line JSON logs or compact multi-line client JSON blocks."""
+        nonlocal read_bytes
+        try:
+            return json.loads(first_line)
+        except json.JSONDecodeError:
+            pass
+        if first_line != "{":
+            return None
+
+        buffer = [first_line]
+        # This deliberately handles the small pretty-printed ClientToGRE blocks
+        # Arena writes for UI responses. Large startup/cache blobs are usually
+        # one-line JSON and still go through the existing filters.
+        for _ in range(500):
+            raw_line = file_obj.readline()
+            if not raw_line:
+                break
+            read_bytes += len(raw_line)
+            render_progress()
+            text = raw_line.decode("utf-8", errors="ignore").strip()
+            buffer.append(text)
+            if text == "}":
+                try:
+                    return json.loads("\n".join(buffer))
+                except json.JSONDecodeError:
+                    continue
+        return None
+
     try:
         for log_path in log_paths:
             with log_path.open("rb") as f:
@@ -5845,14 +6025,15 @@ def extract_game_plays(
                     if not line.startswith("{"):
                         continue
 
-                    try:
-                        root = json.loads(line)
-                    except json.JSONDecodeError:
+                    root = parse_json_root_from_line(line, f)
+                    if root is None:
                         continue
 
                     for msg in root.get("greToClientEvent", {}).get("greToClientMessages", []):
                         gsm = msg.get("gameStateMessage")
                         if not gsm:
+                            if not skipping_duplicate_match:
+                                note_keyword_select_request(msg)
                             continue
 
                         match_id = gsm.get("gameInfo", {}).get("matchID")
@@ -5918,6 +6099,7 @@ def extract_game_plays(
                         emit_match_results(gsm)
 
                     if not root.get("greToClientEvent"):
+                        emit_keyword_select_response(root)
                         mark_postgame_payload(root)
     except KeyboardInterrupt:
         if not live:
@@ -6402,6 +6584,7 @@ No pip install step is required; this script only uses Python's standard library
         # Card-type choice result annotations use the Arena CardType enum.
         "CardType": load_enum_value_names(carddb, "CardType"),
     }
+    keyword_value_names = load_keyword_value_names(carddb)
     debug_grp_ids = set(args.debug_grpid)
     for card_name in args.debug_card:
         matches = find_grp_ids_by_card_name(carddb, card_name)
@@ -6433,6 +6616,7 @@ No pip install step is required; this script only uses Python's standard library
         show_phases=not args.no_phases,
         live=args.live,
         enum_value_names=enum_value_names,
+        keyword_value_names=keyword_value_names,
         card_metadata=card_metadata,
         ability_texts=ability_texts,
         color_mode=args.colour,
