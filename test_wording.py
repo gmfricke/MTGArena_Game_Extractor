@@ -9,6 +9,7 @@ from pathlib import Path
 
 from mtga_extract_games import (
     active_effect_for_resolved_permanent,
+    apply_authoritative_library_count,
     attached_to_player_summary_parts,
     ability_source_instance_id,
     ability_object_label,
@@ -32,10 +33,13 @@ from mtga_extract_games import (
     compact_counted_name,
     candidate_windows_paths,
     counter_summary_suffix,
+    counter_summary_parts,
+    capped_power_toughness_counter_amount,
     copied_object_label,
     death_label_or_none,
     damage_mark_suffix,
     default_archive_db_path,
+    emblem_summary_line,
     find_card_database,
     is_hidden_arena_object,
     find_player_logs,
@@ -43,6 +47,8 @@ from mtga_extract_games import (
     load_enum_value_names,
     load_grp_id_to_metadata,
     land_mana_options,
+    library_delta_for_zone_transfer,
+    library_movement_description,
     life_change_group_source,
     mana_options_from_ability_texts,
     mana_restriction_from_ability_texts,
@@ -659,6 +665,39 @@ class WordingTests(unittest.TestCase):
             self.assertEqual([match["match_number"] for match in archived], [1, 1])
             self.assertEqual([match["game_index"] for match in archived], [1, 2])
             self.assertEqual([match["match_id"] for match in archived], ["match-bo3", "match-bo3"])
+
+    def test_archive_refresh_reorders_current_parse_to_end(self):
+        """Check current parsed log order wins over stale archive insertion order."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "seen.sqlite3"
+            latest = {
+                "number": 1,
+                "match_id": "latest-match",
+                "lines": [
+                    "===== GAME 1: MATCH latest-match =====",
+                    "Game type: Constructed Duel (20 starting life)",
+                    "Winner: Me",
+                ],
+                "has_result": True,
+            }
+            older = {
+                "number": 1,
+                "match_id": "older-match",
+                "lines": [
+                    "===== GAME 1: MATCH older-match =====",
+                    "Game type: Constructed Duel (20 starting life)",
+                    "Winner: Opponent",
+                ],
+                "has_result": True,
+            }
+
+            self.assertEqual(archive_seen_games(db_path, [latest]), (1, 0, 1))
+            self.assertEqual(archive_seen_games(db_path, [older, latest]), (1, 1, 2))
+
+            archived = archived_transcript_matches(db_path)
+            self.assertEqual([match["match_id"] for match in archived], ["older-match", "latest-match"])
+            self.assertEqual([match["number"] for match in archived], [1, 2])
+            self.assertTrue(archived[1]["lines"][0].startswith("===== GAME 2: MATCH latest-match"))
 
     def test_default_archive_db_path_uses_current_directory(self):
         """Check default archive db path uses current directory."""
@@ -1396,6 +1435,21 @@ class WordingTests(unittest.TestCase):
             " (+2/+2 from counters; counter 7)",
         )
         self.assertEqual(scaled_power_toughness_counter("+1/+1", 38), "+38/+38")
+        self.assertEqual(
+            capped_power_toughness_counter_amount("+1/+1", 9, 5, 5, 1, 1),
+            4,
+        )
+        self.assertEqual(
+            counter_summary_parts(
+                Counter({1: 9}),
+                {1: "+1/+1"},
+                current_power=5,
+                current_toughness=5,
+                printed_power=1,
+                printed_toughness=1,
+            ),
+            ["+4/+4 from counters"],
+        )
 
     def test_board_token_and_power_toughness_wording(self):
         """Check board token labels and current power/toughness summaries."""
@@ -1448,6 +1502,14 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(
             attached_to_player_summary_parts({"aura": ["Curse of Leeches"]}),
             ["Auras: Curse of Leeches"],
+        )
+        self.assertEqual(
+            attached_to_player_summary_parts({"curse": ["Curse of Leeches"]}),
+            ["Curses: Curse of Leeches"],
+        )
+        self.assertEqual(
+            emblem_summary_line(["Koth emblem", "Koth emblem"]),
+            "Emblems: 2x Koth emblem",
         )
         self.assertEqual(
             modifier_summary_suffix(
@@ -1506,6 +1568,68 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(phrase_library_count("Me", 1), "Me: 1 card")
         self.assertEqual(phrase_library_count("Opponent", 42), "Opponent: 42 cards")
         self.assertEqual(phrase_library_count("Player 1", None), "Player 1: unknown")
+
+    def test_library_zone_transfer_deltas(self):
+        """Check inferred library deltas for common zone movements."""
+        self.assertEqual(
+            library_delta_for_zone_transfer(
+                "Draw",
+                "ZoneType_Library",
+                "ZoneType_Hand",
+                1,
+            ),
+            -1,
+        )
+        self.assertEqual(
+            library_delta_for_zone_transfer(
+                "Put",
+                "ZoneType_Library",
+                "ZoneType_Battlefield",
+                3,
+            ),
+            -3,
+        )
+        self.assertEqual(
+            library_delta_for_zone_transfer(
+                "Seek",
+                "ZoneType_Library",
+                "ZoneType_Hand",
+                2,
+            ),
+            -2,
+        )
+        self.assertEqual(
+            library_delta_for_zone_transfer(
+                "Conjure",
+                None,
+                "ZoneType_Library",
+                1,
+            ),
+            1,
+        )
+        self.assertEqual(
+            library_delta_for_zone_transfer(
+                "Shuffle",
+                "ZoneType_Library",
+                "ZoneType_Library",
+                10,
+            ),
+            0,
+        )
+
+    def test_library_debug_descriptions_and_authoritative_override(self):
+        """Check library debug descriptions and Arena count override behavior."""
+        self.assertEqual(
+            library_movement_description(
+                "Put",
+                "ZoneType_Library",
+                "ZoneType_Battlefield",
+            ),
+            "Put: library -> Battlefield",
+        )
+        self.assertEqual(apply_authoritative_library_count(40, 40), (40, False))
+        self.assertEqual(apply_authoritative_library_count(43, 40), (40, True))
+        self.assertEqual(apply_authoritative_library_count(None, 40), (40, False))
 
     def test_mulligan_wording_does_not_assume_hand_size(self):
         """Check mulligan wording does not assume hand size."""

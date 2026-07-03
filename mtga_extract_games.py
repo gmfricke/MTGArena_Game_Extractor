@@ -157,6 +157,8 @@ def load_grp_id_to_metadata(carddb_path: Path) -> dict[int, dict]:
     frame_colors_expr = "c.FrameColors" if "FrameColors" in card_columns else "''"
     mana_cost_expr = "c.OldSchoolManaText" if "OldSchoolManaText" in card_columns else "''"
     mana_value_expr = "c.Order_CMCWithXLast" if "Order_CMCWithXLast" in card_columns else "NULL"
+    power_expr = "c.Power" if "Power" in card_columns else "NULL"
+    toughness_expr = "c.Toughness" if "Toughness" in card_columns else "NULL"
 
     cur.execute(f"""
         SELECT
@@ -169,7 +171,9 @@ def load_grp_id_to_metadata(carddb_path: Path) -> dict[int, dict]:
             {color_identity_expr},
             {frame_colors_expr},
             {mana_cost_expr},
-            {mana_value_expr}
+            {mana_value_expr},
+            {power_expr},
+            {toughness_expr}
         FROM Cards c
         JOIN Localizations_enUS l
           ON c.TitleId = l.LocId
@@ -189,6 +193,8 @@ def load_grp_id_to_metadata(carddb_path: Path) -> dict[int, dict]:
         frame_colors_text,
         mana_cost_text,
         mana_value,
+        power_text,
+        toughness_text,
     ) in cur.fetchall():
         grp_id = int(grp_id)
         if grp_id not in metadata:
@@ -201,6 +207,8 @@ def load_grp_id_to_metadata(carddb_path: Path) -> dict[int, dict]:
                 "frame_colors": set(parse_carddb_int_list(frame_colors_text)),
                 "mana_cost": mana_cost_text or "",
                 "mana_value": mana_value,
+                "power": str(power_text) if power_text is not None else None,
+                "toughness": str(toughness_text) if toughness_text is not None else None,
                 "ability_texts": [],
                 "play_mechanics": [],
             }
@@ -1383,6 +1391,8 @@ def should_group_life_change_source(source: str | None) -> bool:
 
 def life_change_group_source(source: str | None) -> str | None:
     """Normalize known permanent sources when grouping life-change bursts."""
+    if source and source.startswith("grpId "):
+        return None
     if not source or should_group_life_change_source(source):
         return source
     return f"{source} ability"
@@ -1630,6 +1640,44 @@ def scaled_power_toughness_counter(name: str, amount: int) -> str | None:
     power_total = int(power) * amount
     toughness_total = int(toughness) * amount
     return f"{power_sign}{power_total}/{toughness_sign}{toughness_total}"
+
+
+def printed_power_toughness_value(value: str | None) -> int | None:
+    """Parse numeric printed power/toughness values from card metadata."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return int(text) if re.fullmatch(r"-?\d+", text) else None
+
+
+def capped_power_toughness_counter_amount(
+    name: str,
+    amount: int,
+    current_power: int | None,
+    current_toughness: int | None,
+    printed_power: int | None,
+    printed_toughness: int | None,
+) -> int:
+    """Cap simple positive P/T counters when current stats prove accumulated logs drifted."""
+    match = re.fullmatch(r"\+(\d+)/\+(\d+)", name)
+    if (
+        not match
+        or amount <= 0
+        or current_power is None
+        or current_toughness is None
+        or printed_power is None
+        or printed_toughness is None
+    ):
+        return amount
+    power_step, toughness_step = (int(part) for part in match.groups())
+    power_delta = current_power - printed_power
+    toughness_delta = current_toughness - printed_toughness
+    if power_delta < 0 or toughness_delta < 0:
+        return amount
+    cap = min(power_delta // power_step, toughness_delta // toughness_step)
+    if cap < amount:
+        return max(0, cap)
+    return amount
 
 
 def grouped_name_phrase(names: list[str]) -> str:
@@ -1904,13 +1952,31 @@ def modifier_summary_suffix(parts: list[str]) -> str:
     return f" ({'; '.join(parts)})" if parts else ""
 
 
-def counter_summary_parts(counter_totals: Counter, counter_names: dict[int, str]) -> list[str]:
+def counter_summary_parts(
+    counter_totals: Counter,
+    counter_names: dict[int, str],
+    *,
+    current_power: int | None = None,
+    current_toughness: int | None = None,
+    printed_power: int | None = None,
+    printed_toughness: int | None = None,
+) -> list[str]:
     """Render object counters as board-state modifier fragments."""
     parts = []
     for raw_type, amount in sorted(counter_totals.items(), key=lambda item: str(item[0])):
         if amount <= 0:
             continue
         name = counter_names.get(raw_type, f"counter {raw_type}")
+        amount = capped_power_toughness_counter_amount(
+            name,
+            amount,
+            current_power,
+            current_toughness,
+            printed_power,
+            printed_toughness,
+        )
+        if amount <= 0:
+            continue
         scaled = scaled_power_toughness_counter(name, amount)
         if scaled:
             parts.append(f"{scaled} from counters")
@@ -1932,6 +1998,7 @@ def attachment_summary_parts(attachment_names_by_kind: dict[str, list[str]]) -> 
     """Render Arena attachment annotations as modified-permanent fragments."""
     parts = []
     for kind, verb in (
+        ("curse", "enchanted by"),
         ("aura", "enchanted by"),
         ("equipment", "equipped with"),
         ("other", "attached to"),
@@ -1946,6 +2013,7 @@ def attached_to_player_summary_parts(attachment_names_by_kind: dict[str, list[st
     """Render attachments that are attached directly to a player."""
     parts = []
     for kind, label in (
+        ("curse", "Curses"),
         ("aura", "Auras"),
         ("equipment", "Equipment"),
         ("other", "Other"),
@@ -1954,6 +2022,12 @@ def attached_to_player_summary_parts(attachment_names_by_kind: dict[str, list[st
         if phrase:
             parts.append(f"{label}: {phrase}")
     return parts
+
+
+def emblem_summary_line(names: list[str]) -> str | None:
+    """Render emblems as a player-state line when Arena exposes emblem objects."""
+    phrase = grouped_name_phrase(names)
+    return f"Emblems: {phrase}" if phrase else None
 
 
 def ownership_summary_part(controller_label: str, owner_label_text: str) -> str | None:
@@ -2116,6 +2190,56 @@ def phrase_library_count(label: str, count: int | None) -> str:
         return f"{label}: unknown"
     plural = "" if count == 1 else "s"
     return f"{label}: {count} card{plural}"
+
+
+def library_delta_for_zone_transfer(
+    category: str | None,
+    source_zone_type: str | None,
+    dest_zone_type: str | None,
+    affected_count: int,
+) -> int:
+    """Return the library-size delta implied by one Arena ZoneTransfer annotation."""
+    if affected_count <= 0:
+        return 0
+    source_is_library = source_zone_type == "ZoneType_Library"
+    dest_is_library = dest_zone_type == "ZoneType_Library"
+    if source_is_library and not dest_is_library:
+        return -affected_count
+    if dest_is_library and not source_is_library:
+        return affected_count
+    # Shuffle, reveal, and library reordering events can touch library objects
+    # without changing the count. Treat library->library as a no-op.
+    return 0
+
+
+def library_movement_description(
+    category: str | None,
+    source_zone_type: str | None,
+    dest_zone_type: str | None,
+) -> str:
+    """Describe the library-facing direction of a zone movement for debug logs."""
+    source = clean_arena_enum(source_zone_type, "ZoneType_") or "unknown"
+    dest = clean_arena_enum(dest_zone_type, "ZoneType_") or "unknown"
+    category_text = category or "ZoneTransfer"
+    if source_zone_type == "ZoneType_Library" and dest_zone_type != "ZoneType_Library":
+        return f"{category_text}: library -> {dest}"
+    if dest_zone_type == "ZoneType_Library" and source_zone_type != "ZoneType_Library":
+        return f"{category_text}: {source} -> library"
+    if source_zone_type == "ZoneType_Library" and dest_zone_type == "ZoneType_Library":
+        return f"{category_text}: library -> library"
+    return f"{category_text}: {source} -> {dest}"
+
+
+def apply_authoritative_library_count(
+    inferred_count: int | None,
+    authoritative_count: int | None,
+) -> tuple[int | None, bool]:
+    """Prefer Arena's zone count when it disagrees with an inferred library count."""
+    if authoritative_count is None:
+        return inferred_count, False
+    if inferred_count != authoritative_count:
+        return authoritative_count, inferred_count is not None
+    return inferred_count, False
 
 
 def format_card_mana_cost(raw_cost: str | None) -> str | None:
@@ -2396,6 +2520,7 @@ def new_match_record(number: int, match_id: str, lines: list[str]) -> dict:
         "events": [], "debug_hits": [],
         "debug_seen_objects": set(),
         "choice_events": [], "target_events": [], "trigger_events": [],
+        "library_events": [],
         "has_result": False, "saw_postgame_payload": False,
         "postgame_hint": None, "finalized": False,
     }
@@ -2672,6 +2797,7 @@ def archive_seen_games(
 
     inserted = 0
     updated = 0
+    refreshed_game_rows = []
     for match, game_index in records:
         match_id = match["match_id"]
         if match_id in existing_matches:
@@ -2732,6 +2858,13 @@ def archive_seen_games(
                 (match_row_id, game_index),
             ).fetchone()[0]
             existing_games[game_key] = (game_id, game_archive_index)
+        refreshed_game_rows.append(
+            {
+                "game_id": game_id,
+                "match_id": match_id,
+                "lines": cleaned_transcript_lines(match["lines"]),
+            }
+        )
         con.execute(
             """
             INSERT INTO transcripts (
@@ -2750,6 +2883,35 @@ def archive_seen_games(
             "UPDATE matches SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ?",
             (match_row_id,),
         )
+
+    if refreshed_game_rows:
+        # Archive rows are normally append-only, but default path discovery can
+        # later add older rotated logs after newer current logs. Re-promote the
+        # games seen in this parse to the end in parse order so --last N follows
+        # the actual current log order instead of stale insertion order.
+        total_after_refresh = con.execute("SELECT count(*) FROM games").fetchone()[0]
+        first_current_index = total_after_refresh - len(refreshed_game_rows) + 1
+        temporary_index = -(total_after_refresh + len(refreshed_game_rows) + 1000)
+        for offset, row in enumerate(refreshed_game_rows):
+            con.execute(
+                "UPDATE games SET game_archive_index = ? WHERE id = ?",
+                (temporary_index - offset, row["game_id"]),
+            )
+        for offset, row in enumerate(refreshed_game_rows):
+            final_index = first_current_index + offset
+            lines = transcript_with_game_header(row["lines"], final_index, row["match_id"])
+            con.execute(
+                "UPDATE games SET game_archive_index = ? WHERE id = ?",
+                (final_index, row["game_id"]),
+            )
+            con.execute(
+                """
+                UPDATE transcripts
+                SET line_count = ?, content = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE game_id = ? AND format = 'plain_text'
+                """,
+                (len(lines), "\n".join(lines), row["game_id"]),
+            )
     total = con.execute("SELECT count(*) FROM games").fetchone()[0]
     con.commit()
     con.close()
@@ -2793,6 +2955,7 @@ def archived_transcript_matches(db_path: Path) -> list[dict]:
                 "choice_events": [],
                 "target_events": [],
                 "trigger_events": [],
+                "library_events": [],
                 "has_result": bool(has_result),
                 "saw_postgame_payload": False,
                 "postgame_hint": None,
@@ -2811,6 +2974,7 @@ def extract_game_plays(
     debug_choices: bool = False,
     debug_targets: bool = False,
     debug_triggers: bool = False,
+    debug_library: bool = False,
     nth_from_start: int | None = None,
     last_games: int | None = None,
     first_games: int | None = None,
@@ -2883,6 +3047,11 @@ def extract_game_plays(
     skipping_duplicate_match = False
     live_archived_match_ids = set()
     debug_grp_ids = debug_grp_ids or set()
+    library_authoritative_counts = {}
+    library_inferred_counts = {}
+    library_snapshot_changes = []
+    current_gsm_library_deltas = Counter()
+    current_gsm_library_events = []
 
     debug_counts = Counter()
     debug_samples = {}
@@ -3078,6 +3247,7 @@ def extract_game_plays(
         nonlocal current_turn, current_turn_info, last_game_state_id
         nonlocal current_game_has_commanders, known_local_seat, event_index
         nonlocal pending_mill_group, current_phase_section, emitted_phase_section
+        nonlocal library_snapshot_changes, current_gsm_library_deltas, current_gsm_library_events
 
         event_index = 0
         current_turn = None
@@ -3119,8 +3289,13 @@ def extract_game_plays(
             commander_instance_ids,
             commander_cast_counts,
             pending_death_events,
+            library_authoritative_counts,
+            library_inferred_counts,
         )
         pending_mill_group = None
+        library_snapshot_changes = []
+        current_gsm_library_deltas = Counter()
+        current_gsm_library_events = []
 
     def start_match(match_id, gsm):
         """Initialize transcript and parser state for a new Arena match id."""
@@ -3320,7 +3495,11 @@ def extract_game_plays(
 
     def zone_move_owner(ann, details):
         """Prefer the player whose destination changed for draw/seek/put style events."""
-        return owner_label(
+        return owner_label(zone_move_owner_seat(ann, details))
+
+    def zone_move_owner_seat(ann, details):
+        """Prefer the raw seat whose destination changed for zone movement events."""
+        return (
             zone_owner(details.get("zone_dest"))
             or zone_owner(details.get("zone_src"))
             or object_owner((ann.get("affectedIds") or [None])[0])
@@ -3606,7 +3785,8 @@ def extract_game_plays(
         # when the object snapshot is gone by the time ModifiedLife points at it.
         # Check that remembered label before falling back to "instance N".
         if instance_id in remembered_object_labels and not objects.get(instance_id):
-            return remembered_object_labels[instance_id]
+            label = remembered_object_labels[instance_id]
+            return None if label.startswith("grpId ") else label
         obj = objects.get(instance_id, {})
         if obj.get("type") == "GameObjectType_Ability":
             label = object_label_from_object(obj) or remembered_object_labels.get(instance_id)
@@ -3797,10 +3977,24 @@ def extract_game_plays(
         obj = objects.get(instance_id, {})
         base = token_board_name(base, obj)
         modifier_parts = []
+        metadata = metadata_for_object(obj) or {}
+        current_power = arena_value_int(obj.get("power"))
+        current_toughness = arena_value_int(obj.get("toughness"))
+        printed_power = printed_power_toughness_value(metadata.get("power"))
+        printed_toughness = printed_power_toughness_value(metadata.get("toughness"))
         power_toughness = power_toughness_summary(obj)
         if power_toughness:
             modifier_parts.append(power_toughness)
-        modifier_parts.extend(counter_summary_parts(object_counters[instance_id], counter_type_names))
+        modifier_parts.extend(
+            counter_summary_parts(
+                object_counters[instance_id],
+                counter_type_names,
+                current_power=current_power,
+                current_toughness=current_toughness,
+                printed_power=printed_power,
+                printed_toughness=printed_toughness,
+            )
+        )
         modifier_parts.extend(attachment_summary_parts(attachments_for_permanent(instance_id)))
         controller = obj.get("controllerSeatId")
         owner = obj.get("ownerSeatId")
@@ -3825,6 +4019,8 @@ def extract_game_plays(
         """Classify an attachment by subtype for player and permanent summaries."""
         attachment = objects.get(attachment_id, {})
         subtypes = set(attachment.get("subtypes") or [])
+        if "SubType_Curse" in subtypes:
+            return "curse"
         if "SubType_Aura" in subtypes:
             return "aura"
         if "SubType_Equipment" in subtypes:
@@ -3860,6 +4056,20 @@ def extract_game_plays(
                 continue
             attachment_names_by_kind[attachment_kind(attachment_id)].append(name)
         return attachment_names_by_kind
+
+    def emblems_for_player(seat):
+        """Collect visible emblem-like objects controlled or owned by a player."""
+        names = []
+        for obj in objects.values():
+            if "CardType_Emblem" not in set(obj.get("cardTypes") or []):
+                continue
+            controller = obj.get("controllerSeatId") or obj.get("ownerSeatId")
+            if controller != seat:
+                continue
+            name = card_label_for_snapshot(obj.get("instanceId"))
+            if name and name != "unknown card":
+                names.append(name)
+        return sorted(set(names))
 
     def battlefield_row_for_object(obj):
         """Classify a permanent into the board row used in turn-state blocks."""
@@ -4042,6 +4252,140 @@ def extract_game_plays(
                 return len(zone.get("objectInstanceIds") or [])
         return None
 
+    def note_library_zone_snapshots(gsm):
+        """Record authoritative library counts from Arena zone snapshots."""
+        if not debug_library:
+            return
+        for zone in gsm.get("zones", []):
+            if zone.get("type") != "ZoneType_Library":
+                continue
+            seat = zone.get("ownerSeatId")
+            if seat is None:
+                continue
+            count = len(zone.get("objectInstanceIds") or [])
+            previous = library_authoritative_counts.get(seat)
+            library_authoritative_counts[seat] = count
+            if seat not in library_inferred_counts:
+                library_inferred_counts[seat] = count
+            if previous != count:
+                library_snapshot_changes.append(
+                    {
+                        "kind": "snapshot",
+                        "turn": current_turn,
+                        "player": owner_label(seat),
+                        "player_seat": seat,
+                        "event": "Arena zone snapshot",
+                        "previous": previous,
+                        "new": count,
+                        "delta": None if previous is None else count - previous,
+                        "gameStateId": gsm.get("gameStateId"),
+                    }
+                )
+
+    def note_library_zone_transfer(ann, gsm, details, category, affected):
+        """Track inferred library movement from ZoneTransfer annotations for debugging."""
+        if not debug_library:
+            return
+        source_zone_id = details.get("zone_src")
+        dest_zone_id = details.get("zone_dest")
+        source_zone_type = zones.get(source_zone_id, {}).get("type")
+        dest_zone_type = zones.get(dest_zone_id, {}).get("type")
+        affected_count = len(affected)
+        delta = library_delta_for_zone_transfer(
+            category,
+            source_zone_type,
+            dest_zone_type,
+            affected_count,
+        )
+        if delta == 0 and source_zone_type != "ZoneType_Library" and dest_zone_type != "ZoneType_Library":
+            return
+        seat = None
+        if source_zone_type == "ZoneType_Library":
+            seat = zone_owner(source_zone_id)
+        elif dest_zone_type == "ZoneType_Library":
+            seat = zone_owner(dest_zone_id)
+        if seat is None:
+            seat = zone_move_owner_seat(ann, details)
+        name = readable_move_name(affected[0], category) if affected else None
+        previous = library_inferred_counts.get(seat)
+        if previous is not None and seat is not None:
+            previous += current_gsm_library_deltas.get(seat, 0)
+        new = previous + delta if previous is not None else None
+        if seat is not None and delta:
+            current_gsm_library_deltas[seat] += delta
+        current_gsm_library_events.append(
+            {
+                "kind": "movement",
+                "turn": current_turn,
+                "player": owner_label(seat) if seat is not None else None,
+                "player_seat": seat,
+                "event": library_movement_description(category, source_zone_type, dest_zone_type),
+                "category": category,
+                "card": name,
+                "affectedIds": list(affected),
+                "previous": previous,
+                "new": new,
+                "delta": delta,
+                "sourceZoneId": source_zone_id,
+                "destZoneId": dest_zone_id,
+                "gameStateId": gsm.get("gameStateId"),
+                "annotationId": ann.get("id"),
+            }
+        )
+
+    def finalize_library_debug_for_gsm(gsm):
+        """Apply inferred library deltas and warn when Arena snapshots disagree."""
+        if not debug_library or current_match_record is None:
+            return
+        warnings = []
+        for seat, delta in current_gsm_library_deltas.items():
+            previous = library_inferred_counts.get(seat)
+            if previous is not None:
+                library_inferred_counts[seat] = previous + delta
+        for zone in gsm.get("zones", []):
+            if zone.get("type") != "ZoneType_Library":
+                continue
+            seat = zone.get("ownerSeatId")
+            if seat is None:
+                continue
+            authoritative = len(zone.get("objectInstanceIds") or [])
+            inferred = library_inferred_counts.get(seat)
+            corrected, drifted = apply_authoritative_library_count(inferred, authoritative)
+            # Arena starts Brawl libraries at deck size, then removes opening
+            # hands before the first turn. That setup transition is expected,
+            # not parser drift.
+            if drifted and current_turn is not None:
+                warnings.append(
+                    {
+                        "kind": "warning",
+                        "turn": current_turn,
+                        "player": owner_label(seat),
+                        "event": "library drift detected; using Arena zone snapshot",
+                        "previous": inferred,
+                        "new": authoritative,
+                        "delta": authoritative - inferred,
+                        "gameStateId": gsm.get("gameStateId"),
+                    }
+                )
+            library_inferred_counts[seat] = corrected
+            library_authoritative_counts[seat] = authoritative
+        records = []
+        records.extend(library_snapshot_changes)
+        records.extend(current_gsm_library_events)
+        records.extend(warnings)
+        if records:
+            current_match_record["library_events"].append(
+                {
+                    "event_index": event_index,
+                    "turn": current_turn,
+                    "gameStateId": gsm.get("gameStateId"),
+                    "records": records,
+                }
+            )
+        library_snapshot_changes.clear()
+        current_gsm_library_events.clear()
+        current_gsm_library_deltas.clear()
+
     def infer_local_seat():
         """Infer the user's seat from the only hand that has visible card names."""
         candidates = []
@@ -4097,6 +4441,9 @@ def extract_game_plays(
         parts = attached_to_player_summary_parts(attachments_for_player(seat))
         if parts:
             emit(f"  Attached: {'; '.join(parts)}")
+        emblem_line = emblem_summary_line(emblems_for_player(seat))
+        if emblem_line:
+            emit(f"  {emblem_line}")
 
     def emit_board_rows(seat):
         """Print board rows in the requested land/noncreature/creature order."""
@@ -4385,6 +4732,7 @@ def extract_game_plays(
         if not category or not affected:
             return
 
+        note_library_zone_transfer(ann, gsm, details, category, affected)
         iid = affected[0]
         owner = event_owner(ann, details)
         detail_name = card_name_from_grp(details.get("grpid"))
@@ -5121,6 +5469,7 @@ def extract_game_plays(
 
     def update_state(gsm):
         """Merge a full/diff game-state message into the local state model."""
+        note_library_zone_snapshots(gsm)
         for team in gsm.get("teams", []):
             team_id = team.get("id")
             if team_id is not None:
@@ -5139,7 +5488,7 @@ def extract_game_plays(
                     source_name = card_name_from_grp(obj.get("objectSourceGrpId"))
                     if not source_name and obj.get("parentId") is not None:
                         source_name = source_label(obj.get("parentId"))
-                    if source_name:
+                    if source_name and not source_name.startswith("grpId "):
                         # Ability instances may be deleted in the same update
                         # that reports their zone-change effects. Store the
                         # source before deletion so later annotations still
@@ -5565,6 +5914,7 @@ def extract_game_plays(
                         for ann in gsm.get("annotations", []):
                             handle_annotation(ann, gsm, msg)
 
+                        finalize_library_debug_for_gsm(gsm)
                         emit_match_results(gsm)
 
                     if not root.get("greToClientEvent"):
@@ -5759,6 +6109,37 @@ def extract_game_plays(
                     file=sys.stderr,
                 )
 
+    if debug_library:
+        print("\nDebug library-count events:", file=sys.stderr)
+        for match in selected_matches:
+            print(
+                f"\n===== LIBRARY GAME {match['number']}: MATCH {match['match_id']} =====",
+                file=sys.stderr,
+            )
+            if not match["library_events"]:
+                print("No library count changes or library-facing movements found.", file=sys.stderr)
+                continue
+            for event in match["library_events"]:
+                print(
+                    f"\n### event {event['event_index']} "
+                    f"turn={event['turn']} gameStateId={event['gameStateId']}",
+                    file=sys.stderr,
+                )
+                for record in event.get("records", []):
+                    player = record.get("player") or "unknown player"
+                    previous = record.get("previous")
+                    new = record.get("new")
+                    delta = record.get("delta")
+                    delta_text = "" if delta is None else f" delta={delta:+d}"
+                    card_text = f" card={record['card']!r}" if record.get("card") else ""
+                    print(
+                        (
+                            f"  [{record.get('kind')}] {player}: {record.get('event')} "
+                            f"{previous}->{new}{delta_text}{card_text}"
+                        ),
+                        file=sys.stderr,
+                    )
+
 
 def main() -> None:
     """Parse command-line arguments and run the MTG Arena transcript extractor."""
@@ -5861,6 +6242,11 @@ No pip install step is required; this script only uses Python's standard library
         "--debug-triggers",
         action="store_true",
         help="advanced: print compact snippets for trigger-like gameplay events",
+    )
+    parser.add_argument(
+        "--debug-library",
+        action="store_true",
+        help="advanced: print library count changes, inferred deltas, and drift warnings",
     )
     selection_group = parser.add_mutually_exclusive_group()
     selection_group.add_argument(
@@ -6035,6 +6421,7 @@ No pip install step is required; this script only uses Python's standard library
         debug_choices=args.debug_choices,
         debug_targets=args.debug_targets,
         debug_triggers=args.debug_triggers,
+        debug_library=args.debug_library,
         nth_from_start=args.select,
         last_games=args.last,
         first_games=args.first,
