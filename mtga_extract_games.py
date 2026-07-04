@@ -1006,6 +1006,11 @@ def has_live_selection_conflict(args) -> bool:
     )
 
 
+def is_numeric_cli_token(value) -> bool:
+    """Return true for positional arguments that look like mistaken selectors."""
+    return value is not None and str(value).strip().isdigit()
+
+
 def clean_arena_enum(value: str | None, prefix: str) -> str | None:
     """Convert Arena enum strings such as GameVariant_Brawl to Brawl."""
     if not value:
@@ -7167,22 +7172,6 @@ No pip install step is required; this script only uses Python's standard library
     )
     args = parser.parse_args()
 
-    if args.find_paths:
-        diagnostics = discover_input_paths(args.player_log, args.carddb)
-        print(format_path_diagnostics(diagnostics))
-        return
-
-    try:
-        player_log, carddb, path_warning = resolve_input_paths(
-            args.player_log,
-            args.carddb,
-            live=args.live,
-        )
-    except FileNotFoundError as exc:
-        parser.exit(2, f"{exc}\n")
-    if path_warning:
-        print(path_warning, file=sys.stderr)
-
     if args.select is not None and args.select < 1:
         parser.error("--nth-from-start must be 1 or greater")
     if args.nth_from_end is not None and args.nth_from_end < 1:
@@ -7200,10 +7189,31 @@ No pip install step is required; this script only uses Python's standard library
     if args.live:
         if has_live_selection_conflict(args):
             parser.error("--live cannot be combined with game selection options")
+        if is_numeric_cli_token(args.player_log) or is_numeric_cli_token(args.carddb):
+            parser.error(
+                "--live does not take a game number. Use --live to follow the current game, "
+                "or --last 1 to print the most recent completed game."
+            )
         if args.progress:
             parser.error("--live cannot be combined with --progress")
     if args.no_archive_db:
         args.archive_db = None
+
+    if args.find_paths:
+        diagnostics = discover_input_paths(args.player_log, args.carddb)
+        print(format_path_diagnostics(diagnostics))
+        return
+
+    try:
+        player_log, carddb, path_warning = resolve_input_paths(
+            args.player_log,
+            args.carddb,
+            live=args.live,
+        )
+    except FileNotFoundError as exc:
+        parser.exit(2, f"{exc}\n")
+    if path_warning:
+        print(path_warning, file=sys.stderr)
 
     grp_to_name = load_grp_id_to_name(carddb)
     card_metadata = load_grp_id_to_metadata(carddb)
