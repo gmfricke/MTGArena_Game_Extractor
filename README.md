@@ -95,7 +95,7 @@ Save the last two games to a file:
 python3 mtga_extract_games.py --last 2 > mtga_transcript.txt
 ```
 
-Show only one game by number:
+Show only one game by number, counting from the oldest archived game:
 
 ```bash
 python3 mtga_extract_games.py --nth-from-start 3
@@ -223,11 +223,11 @@ The most useful options are:
 
 - `--last 1`: show the most recent game
 - `--last 3`: show the last three games
-- `--all`: show every game in the available Arena logs
+- `--all`: show every archived game after refreshing from the available Arena logs
 - `--first 3`: show the first three games
-- `--nth-from-start 4`: show only game 4 from the log
+- `--nth-from-start 4`: show only game 4, counting from the oldest archived game
 - `--nth-from-end 2`: show the next-to-last game
-- `--range 3 5`: show games 3 through 5
+- `--range 3 5`: show games 3 through 5, counting from the oldest archived game
 - `--live`: show the current game from its start, print new transcript lines as Arena writes them, and archive completed games
 - `--resolves`: show routine "resolves" lines, which are hidden by default
 - `--no-turn-state`: hide board and hand snapshots
@@ -242,7 +242,7 @@ The most useful options are:
 - `--archive-db PATH`: save parsed games to a SQLite archive at `PATH`
 - `--no-archive-db`: read and print directly from the available logs without updating the archive
 
-`--select 4` still works as an older name for `--nth-from-start 4`.
+`--select 4` still works as an older name for `--nth-from-start 4`. It means the fourth game from the oldest archived game, not the fourth game from the newest end.
 
 
 ## Example Transcript

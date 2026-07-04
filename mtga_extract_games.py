@@ -6917,13 +6917,13 @@ def main() -> None:
   Print the most recent game:
     python3 mtga_extract_games.py --last 1
 
-  Print every game in Player.log:
+  Print every archived game, after refreshing the archive from available logs:
     python3 mtga_extract_games.py --all
 
   Save the last three games to a text file:
     python3 mtga_extract_games.py --last 3 > mtga_transcript.txt
 
-  Print only game 4 from the log:
+  Print only game 4 from the oldest archived game:
     python3 mtga_extract_games.py --nth-from-start 4
 
   Print the next-to-last game:
@@ -7028,7 +7028,10 @@ No pip install step is required; this script only uses Python's standard library
     selection_group.add_argument(
         "--all",
         action="store_true",
-        help="output every game in the log; this is also the default when no selector is used",
+        help=(
+            "output every archived game after refreshing from available logs; "
+            "with --no-archive-db, output every game in the parsed logs"
+        ),
     )
     selection_group.add_argument(
         "--nth-from-start",
@@ -7036,7 +7039,11 @@ No pip install step is required; this script only uses Python's standard library
         dest="select",
         type=int,
         metavar="N",
-        help="output only game N, counting from the start of the log; --select is an alias",
+        help=(
+            "output only game N, counting from the oldest archived game; "
+            "with --no-archive-db, count from the start of the parsed logs; "
+            "--select is an alias"
+        ),
     )
     selection_group.add_argument(
         "--nth-from-end",
@@ -7049,7 +7056,10 @@ No pip install step is required; this script only uses Python's standard library
         type=int,
         nargs=2,
         metavar=("X", "Y"),
-        help="output games X through Y, inclusive, counting from the start of the log",
+        help=(
+            "output games X through Y, inclusive, counting from the oldest archived game; "
+            "with --no-archive-db, count from the start of the parsed logs"
+        ),
     )
     selection_group.add_argument(
         "--first",
