@@ -1443,6 +1443,24 @@ def life_change_group_source(source: str | None) -> str | None:
     return f"{source} ability"
 
 
+PHASE_SECTION_ORDER = [
+    "Untap",
+    "Upkeep",
+    "Draw",
+    "Pre-combat main",
+    "Beginning of combat",
+    "Declare attackers",
+    "Declare blockers",
+    "First strike combat damage",
+    "Combat damage",
+    "End of combat",
+    "Postcombat main",
+    "End",
+    "Cleanup",
+]
+PHASE_SECTION_INDEX = {section: index for index, section in enumerate(PHASE_SECTION_ORDER)}
+
+
 def phase_section_label(turn_info: dict) -> str | None:
     """Return the normal Magic step name for an Arena phase/step pair."""
     phase = turn_info.get("phase")
@@ -3378,16 +3396,10 @@ def extract_game_plays(
             return False
         return True
 
-    def emit_phase_heading_if_needed(line: str):
-        """Emit the current phase heading before the first gameplay line in it."""
+    def append_phase_heading(section: str, no_events: bool = False):
+        """Append a phase heading directly without recursing through emit()."""
         nonlocal emitted_phase_section
-        if (
-            not show_phases
-            or suppress_phase_heading
-            or not current_phase_section
-            or emitted_phase_section == current_phase_section
-            or not transcript_line_needs_phase_heading(line)
-        ):
+        if not show_phases or suppress_phase_heading or not section:
             return
         if current_match_lines is None:
             return
@@ -3395,7 +3407,8 @@ def extract_game_plays(
             current_match_lines.append("")
             if live:
                 print("", flush=True)
-        heading = f"-- {current_phase_section} --"
+        suffix = " (no events)" if no_events else ""
+        heading = f"-- {section}{suffix} --"
         current_match_lines.append(heading)
         if live:
             print(
@@ -3407,7 +3420,57 @@ def extract_game_plays(
                 ),
                 flush=True,
             )
-        emitted_phase_section = current_phase_section
+        emitted_phase_section = section
+
+    def emit_phase_transition(section: str | None):
+        """Emit all phase headings needed to show jumps over quiet steps."""
+        if not section or not show_phases or suppress_phase_heading:
+            return
+        if section == emitted_phase_section:
+            return
+        new_index = PHASE_SECTION_INDEX.get(section)
+        old_index = PHASE_SECTION_INDEX.get(emitted_phase_section)
+        if new_index is None:
+            append_phase_heading(section)
+            return
+        if old_index is None:
+            for skipped in PHASE_SECTION_ORDER[:new_index]:
+                append_phase_heading(skipped, no_events=True)
+        elif old_index < new_index:
+            for skipped in PHASE_SECTION_ORDER[old_index + 1:new_index]:
+                append_phase_heading(skipped, no_events=True)
+        append_phase_heading(section)
+
+    def set_current_phase_section(section: str | None):
+        """Set the active phase and immediately list quiet phases crossed."""
+        nonlocal current_phase_section
+        new_index = PHASE_SECTION_INDEX.get(section)
+        old_index = PHASE_SECTION_INDEX.get(emitted_phase_section)
+        if new_index is not None and old_index is not None and new_index < old_index:
+            return
+        if section == "Cleanup" and current_phase_section != "Cleanup":
+            flush_all_pending_stack_casts(section_override=current_phase_section)
+        current_phase_section = section
+        emit_phase_transition(section)
+
+    def emit_phase_heading_if_needed(line: str):
+        """Emit the current phase heading before a delayed event if needed."""
+        current_index = PHASE_SECTION_INDEX.get(current_phase_section)
+        emitted_index = PHASE_SECTION_INDEX.get(emitted_phase_section)
+        if (
+            not show_phases
+            or suppress_phase_heading
+            or not current_phase_section
+            or emitted_phase_section == current_phase_section
+            or (
+                current_index is not None
+                and emitted_index is not None
+                and current_index < emitted_index
+            )
+            or not transcript_line_needs_phase_heading(line)
+        ):
+            return
+        append_phase_heading(current_phase_section)
 
     def emit(line=""):
         """Append a transcript line and print it immediately in live mode."""
@@ -3482,7 +3545,7 @@ def extract_game_plays(
                 update_pending_stack_cast_name(instance_id, card_label(instance_id))
                 flush_pending_stack_cast(instance_id)
         saved_section = current_phase_section
-        current_phase_section = "Cleanup"
+        set_current_phase_section("Cleanup")
         try:
             for ann in cleanup_annotations:
                 handle_annotation(ann, gsm, msg)
@@ -4999,10 +5062,12 @@ def extract_game_plays(
             lines.append(f"{choice['source']} chose {choice['text']} from an Arena keyword prompt")
         return lines
 
-    def flush_pending_stack_cast(instance_id):
+    def flush_pending_stack_cast(instance_id, section_override=None):
         """Emit a delayed speculative cast once Arena confirms it mattered."""
         pending = pending_stack_casts.pop(instance_id, None)
         if pending:
+            if instance_id in emitted_cast_instance_ids:
+                return
             emitted_cast_instance_ids.add(instance_id)
             text = cast_text_with_mana(
                 pending.get("source_id", instance_id),
@@ -5011,7 +5076,7 @@ def extract_game_plays(
             )
             emit_in_phase_section(
                 phrase_player_action(pending["owner"], "cast", text),
-                pending.get("section"),
+                section_override if section_override is not None else pending.get("section"),
             )
 
     def update_pending_stack_cast_name(instance_id, name):
@@ -5043,10 +5108,10 @@ def extract_game_plays(
             "CardType_Planeswalker",
         })
 
-    def flush_all_pending_stack_casts():
+    def flush_all_pending_stack_casts(section_override=None):
         """Emit delayed cast lines before a game ends without resolving them."""
         for instance_id in list(pending_stack_casts):
-            flush_pending_stack_cast(instance_id)
+            flush_pending_stack_cast(instance_id, section_override=section_override)
 
     def infer_missing_cast_for_instance(instance_id):
         """Emit a cast line for named spells whose CastSpell event was hidden."""
@@ -6546,6 +6611,7 @@ def extract_game_plays(
                             suppress_phase_heading = True
                             flush_pending_battlefield_permanent_casts()
                             suppress_phase_heading = was_suppressed
+                            flush_all_pending_stack_casts(section_override=current_phase_section)
                             if current_turn is not None:
                                 emit_cleanup_discards_before_turn_header(gsm, msg, turn_info)
                             current_turn = turn_info["turnNumber"]
@@ -6560,7 +6626,7 @@ def extract_game_plays(
                         if turn_info:
                             current_turn_info = turn_info
                         if turn_info:
-                            current_phase_section = phase_section_label(turn_info)
+                            set_current_phase_section(phase_section_label(turn_info))
 
                         event_index += 1
                         record_gameplay_event(msg, gsm)
