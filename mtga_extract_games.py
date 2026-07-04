@@ -3374,6 +3374,28 @@ def extract_game_plays(
     counter_type_names = enum_value_names.get("CounterType") or {}
     card_type_names = enum_value_names.get("CardType") or {}
     choice_value_names = build_choice_value_names(subtype_names, card_type_names)
+
+    def turn_phase_key(turn_info: dict | None) -> tuple | None:
+        """Return the rules boundary where floating mana empties.
+
+        Arena sends player records as diffs. When a later diff omits manaPool,
+        a plain dict merge would keep the previous pool even though Magic rules
+        empty mana as turns, phases, and steps change. This key lets us clear
+        stale floating mana before applying the next Arena diff.
+        """
+        if not turn_info:
+            return None
+        return (
+            turn_info.get("turnNumber"),
+            turn_info.get("phase"),
+            turn_info.get("step"),
+        )
+
+    def clear_floating_mana_pools() -> None:
+        """Forget floating mana at a rules boundary unless Arena re-sends it."""
+        for player in players.values():
+            player.pop("manaPool", None)
+
     def transcript_line_needs_phase_heading(line: str) -> bool:
         """Return true for visible gameplay lines that benefit from phase context."""
         if not line or line.startswith(("=", "-- ", "  ", "    ")):
@@ -3423,7 +3445,14 @@ def extract_game_plays(
         emitted_phase_section = section
 
     def emit_phase_transition(section: str | None):
-        """Emit all phase headings needed to show jumps over quiet steps."""
+        """Emit quiet phases crossed before the active phase gets a real event.
+
+        Arena reports phase changes before it reports the gameplay actions that
+        happen in those phases. If we print the active phase immediately, a
+        phase with no transcriptable events looks like a blank section. Instead
+        we only print phases that were crossed without events here; the active
+        phase heading is printed later by emit_phase_heading_if_needed().
+        """
         if not section or not show_phases or suppress_phase_heading:
             return
         if section == emitted_phase_section:
@@ -3439,7 +3468,6 @@ def extract_game_plays(
         elif old_index < new_index:
             for skipped in PHASE_SECTION_ORDER[old_index + 1:new_index]:
                 append_phase_heading(skipped, no_events=True)
-        append_phase_heading(section)
 
     def set_current_phase_section(section: str | None):
         """Set the active phase and immediately list quiet phases crossed."""
@@ -6598,13 +6626,16 @@ def extract_game_plays(
                         if game_state_id is not None:
                             last_game_state_id = game_state_id
 
+                        turn_info = gsm.get("turnInfo", {})
+                        if turn_phase_key(turn_info) != turn_phase_key(current_turn_info):
+                            clear_floating_mana_pools()
+
                         current_actions = gsm.get("actions") or []
                         remember_cast_mana_actions()
                         update_state(gsm)
                         if known_local_seat is None:
                             known_local_seat = infer_local_seat()
 
-                        turn_info = gsm.get("turnInfo", {})
                         if "turnNumber" in turn_info and turn_info["turnNumber"] != current_turn:
                             flush_pending_event_groups()
                             was_suppressed = suppress_phase_heading
