@@ -3452,6 +3452,44 @@ def extract_game_plays(
         finally:
             current_phase_section = saved_section
 
+    def is_cleanup_discard_before_new_turn(ann, gsm, new_turn_info):
+        """Detect discard-down-to-hand-size events Arena reports with the next turn."""
+        if "AnnotationType_ZoneTransfer" not in set(ann.get("type") or []):
+            return False
+        details = detail_dict(ann.get("details"))
+        if details.get("category") != "Discard":
+            return False
+        if new_turn_info.get("phase") != "Phase_Beginning":
+            return False
+        affected_ids = ann.get("affectedIds") or []
+        instance_id = affected_ids[0] if affected_ids else None
+        discarding_seat = zone_owner(details.get("zone_src")) or object_owner(instance_id)
+        new_active = new_turn_info.get("activePlayer")
+        return discarding_seat is not None and new_active is not None and discarding_seat != new_active
+
+    def emit_cleanup_discards_before_turn_header(gsm, msg, new_turn_info):
+        """Emit previous-turn cleanup discards before printing the next turn header."""
+        nonlocal current_phase_section
+        cleanup_annotations = [
+            ann
+            for ann in gsm.get("annotations", [])
+            if is_cleanup_discard_before_new_turn(ann, gsm, new_turn_info)
+        ]
+        if not cleanup_annotations:
+            return
+        for ann in cleanup_annotations:
+            for instance_id in ann.get("affectedIds") or []:
+                update_pending_stack_cast_name(instance_id, card_label(instance_id))
+                flush_pending_stack_cast(instance_id)
+        saved_section = current_phase_section
+        current_phase_section = "Cleanup"
+        try:
+            for ann in cleanup_annotations:
+                handle_annotation(ann, gsm, msg)
+            flush_pending_event_groups()
+        finally:
+            current_phase_section = saved_section
+
     def mark_postgame_payload(root):
         """Remember postgame account/course blobs that appear after GRE stops."""
         if current_match_record is None or current_match_record.get("has_result"):
@@ -4971,7 +5009,10 @@ def extract_game_plays(
                 pending["text"],
                 pending.get("seat"),
             )
-            emit(phrase_player_action(pending["owner"], "cast", text))
+            emit_in_phase_section(
+                phrase_player_action(pending["owner"], "cast", text),
+                pending.get("section"),
+            )
 
     def update_pending_stack_cast_name(instance_id, name):
         """Retitle a delayed cast when a later stack update exposes better identity."""
@@ -5244,6 +5285,7 @@ def extract_game_plays(
                     "seat": caster_seat,
                     "text": cast_base_text,
                     "source_id": iid,
+                    "section": current_phase_section,
                 }
             else:
                 emitted_cast_instance_ids.add(iid)
@@ -6498,14 +6540,14 @@ def extract_game_plays(
                             known_local_seat = infer_local_seat()
 
                         turn_info = gsm.get("turnInfo", {})
-                        if turn_info:
-                            current_turn_info = turn_info
                         if "turnNumber" in turn_info and turn_info["turnNumber"] != current_turn:
                             flush_pending_event_groups()
                             was_suppressed = suppress_phase_heading
                             suppress_phase_heading = True
                             flush_pending_battlefield_permanent_casts()
                             suppress_phase_heading = was_suppressed
+                            if current_turn is not None:
+                                emit_cleanup_discards_before_turn_header(gsm, msg, turn_info)
                             current_turn = turn_info["turnNumber"]
                             current_phase_section = None
                             emitted_phase_section = None
@@ -6515,6 +6557,8 @@ def extract_game_plays(
                                 f"{owner_label(turn_info.get('activePlayer'))} ==="
                             )
                             emit_turn_state()
+                        if turn_info:
+                            current_turn_info = turn_info
                         if turn_info:
                             current_phase_section = phase_section_label(turn_info)
 
