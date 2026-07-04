@@ -156,7 +156,7 @@ class WordingTests(unittest.TestCase):
         self.assertIsNone(transcript_line_perspective("Game type: Constructed Duel"))
         self.assertEqual(transcript_line_style("===== GAME 1: MATCH abc ====="), "game_header")
         self.assertEqual(transcript_line_style("Game type: Constructed Duel"), "metadata")
-        self.assertEqual(transcript_line_style("-- Combat - damage --"), "metadata")
+        self.assertEqual(transcript_line_style("-- Combat damage --"), "metadata")
         self.assertEqual(transcript_line_style("=== Turn 1: Me ==="), "me_header")
         self.assertEqual(transcript_line_style("=== Turn 2: Opponent ==="), "opponent_header")
         self.assertEqual(transcript_line_style("  Hand: Plains"), "state_detail")
@@ -171,10 +171,18 @@ class WordingTests(unittest.TestCase):
         self.assertFalse(should_color_output("auto", False))
         self.assertTrue(should_color_output("auto", True))
         self.assertTrue(should_color_output("always", False))
-        self.assertIsNone(phase_section_label({"phase": "Phase_Main1"}))
+        self.assertEqual(phase_section_label({"phase": "Phase_Main1"}), "Pre-combat main")
+        self.assertEqual(
+            phase_section_label({"phase": "Phase_Beginning", "step": "Step_Untap"}),
+            "Untap",
+        )
         self.assertEqual(
             phase_section_label({"phase": "Phase_Combat", "step": "Step_DeclareBlock"}),
-            "Combat - blockers",
+            "Declare blockers",
+        )
+        self.assertEqual(
+            phase_section_label({"phase": "Phase_Ending", "step": "Step_Cleanup"}),
+            "Cleanup",
         )
         self.assertIn("\033[36m", colorize_transcript_line("I cast Giada", True))
         self.assertNotIn(
@@ -343,7 +351,7 @@ class WordingTests(unittest.TestCase):
                 [
                     "I cast Steel Seraph",
                     "",
-                    "-- Combat - beginning --",
+                    "-- Beginning of combat --",
                     "I cast Steel Seraph",
                     "I choose flying for Steel Seraph (keyword)",
                 ]
@@ -351,7 +359,7 @@ class WordingTests(unittest.TestCase):
             [
                 "I cast Steel Seraph",
                 "",
-                "-- Combat - beginning --",
+                "-- Beginning of combat --",
                 "I choose flying for Steel Seraph (keyword)",
             ],
         )
@@ -361,7 +369,7 @@ class WordingTests(unittest.TestCase):
         warnings = transcript_diagnostics(
             [
                 "I cast Steel Seraph",
-                "-- Combat - beginning --",
+                "-- Beginning of combat --",
                 "I cast Steel Seraph",
                 "grpId 2 trigger exiles Blind Obedience",
                 "Library: -1 cards",

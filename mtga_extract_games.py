@@ -1444,32 +1444,32 @@ def life_change_group_source(source: str | None) -> str | None:
 
 
 def phase_section_label(turn_info: dict) -> str | None:
-    """Return a compact transcript heading for an Arena phase/step pair."""
+    """Return the normal Magic step name for an Arena phase/step pair."""
     phase = turn_info.get("phase")
     step = turn_info.get("step")
     if phase == "Phase_Beginning":
         return {
-            "Step_Untap": "Beginning - untap",
-            "Step_Upkeep": "Beginning - upkeep",
-            "Step_Draw": "Beginning - draw",
+            "Step_Untap": "Untap",
+            "Step_Upkeep": "Upkeep",
+            "Step_Draw": "Draw",
         }.get(step, "Beginning")
     if phase == "Phase_Main1":
-        return None
+        return "Pre-combat main"
     if phase == "Phase_Combat":
         return {
-            "Step_BeginCombat": "Combat - beginning",
-            "Step_DeclareAttack": "Combat - attackers",
-            "Step_DeclareBlock": "Combat - blockers",
-            "Step_FirstStrikeDamage": "Combat - first strike damage",
-            "Step_CombatDamage": "Combat - damage",
-            "Step_EndCombat": "Combat - end",
+            "Step_BeginCombat": "Beginning of combat",
+            "Step_DeclareAttack": "Declare attackers",
+            "Step_DeclareBlock": "Declare blockers",
+            "Step_FirstStrikeDamage": "First strike combat damage",
+            "Step_CombatDamage": "Combat damage",
+            "Step_EndCombat": "End of combat",
         }.get(step, "Combat")
     if phase == "Phase_Main2":
         return "Postcombat main"
     if phase == "Phase_Ending":
         return {
-            "Step_End": "Ending - end step",
-            "Step_Cleanup": "Ending - cleanup",
+            "Step_End": "End",
+            "Step_Cleanup": "Cleanup",
         }.get(step, "Ending")
     return None
 
