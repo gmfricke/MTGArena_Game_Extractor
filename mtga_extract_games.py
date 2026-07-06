@@ -3588,21 +3588,47 @@ def archive_seen_games(
         # later add older rotated logs after newer current logs. Re-promote the
         # games seen in this parse to the end in parse order so --last N follows
         # the actual current log order instead of stale insertion order.
-        total_after_refresh = con.execute("SELECT count(*) FROM games").fetchone()[0]
-        first_current_index = total_after_refresh - len(refreshed_game_rows) + 1
+        #
+        # Imported archives can already occupy the target tail indexes. Move
+        # every game to a temporary negative index first, then compact games not
+        # seen in this parse and finally append the refreshed rows. That keeps
+        # game_archive_index unique while still making the current logs define
+        # the end of the archive.
+        refreshed_ids = [row["game_id"] for row in refreshed_game_rows]
+        refreshed_id_set = set(refreshed_ids)
+        all_game_ids = [
+            row[0]
+            for row in con.execute(
+                "SELECT id FROM games ORDER BY game_archive_index, id"
+            )
+        ]
+        total_after_refresh = len(all_game_ids)
         temporary_index = -(total_after_refresh + len(refreshed_game_rows) + 1000)
-        for offset, row in enumerate(refreshed_game_rows):
+        for offset, game_id in enumerate(all_game_ids):
             con.execute(
                 "UPDATE games SET game_archive_index = ? WHERE id = ?",
-                (temporary_index - offset, row["game_id"]),
+                (temporary_index - offset, game_id),
             )
-        for offset, row in enumerate(refreshed_game_rows):
-            final_index = first_current_index + offset
+
+        final_index_by_game_id = {}
+        next_final_index = 1
+        for game_id in all_game_ids:
+            if game_id in refreshed_id_set:
+                continue
+            final_index_by_game_id[game_id] = next_final_index
+            next_final_index += 1
+        for row in refreshed_game_rows:
+            final_index_by_game_id[row["game_id"]] = next_final_index
+            next_final_index += 1
+
+        for game_id, final_index in final_index_by_game_id.items():
+            con.execute(
+                "UPDATE games SET game_archive_index = ? WHERE id = ?",
+                (final_index, game_id),
+            )
+        for row in refreshed_game_rows:
+            final_index = final_index_by_game_id[row["game_id"]]
             lines = transcript_with_game_header(row["lines"], final_index, row["match_id"])
-            con.execute(
-                "UPDATE games SET game_archive_index = ? WHERE id = ?",
-                (final_index, row["game_id"]),
-            )
             con.execute(
                 """
                 UPDATE transcripts
