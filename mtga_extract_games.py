@@ -114,6 +114,230 @@ def load_grp_id_to_name(carddb_path: Path) -> dict[int, str]:
     return mapping
 
 
+RARITY_NAMES = {
+    1: "basic",
+    2: "common",
+    3: "uncommon",
+    4: "rare",
+    5: "mythic",
+}
+
+
+def load_grp_id_to_printing_info(carddb_path: Path) -> dict[int, dict]:
+    """Load compact printing metadata used when listing owned cards."""
+    con = sqlite3.connect(carddb_path)
+    cur = con.cursor()
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = {row[0] for row in cur.fetchall()}
+    if not {"Cards", "Localizations_enUS"}.issubset(tables):
+        con.close()
+        return {}
+
+    cur.execute("""
+        SELECT
+            c.GrpId,
+            l.Loc,
+            l.Formatted,
+            c.ExpansionCode,
+            c.CollectorNumber,
+            c.Rarity,
+            c.IsToken
+        FROM Cards c
+        JOIN Localizations_enUS l
+          ON c.TitleId = l.LocId
+        WHERE l.Formatted IN (0, 1)
+        ORDER BY c.GrpId, l.Formatted
+    """)
+    metadata = {}
+    for grp_id, name, _formatted, expansion, collector_number, rarity, is_token in cur.fetchall():
+        grp_id = int(grp_id)
+        if grp_id in metadata:
+            continue
+        metadata[grp_id] = {
+            "name": name,
+            "set": expansion or "",
+            "collector": collector_number or "",
+            "rarity": RARITY_NAMES.get(int(rarity), str(rarity)),
+            "is_token": bool(is_token),
+        }
+    con.close()
+    return metadata
+
+
+def json_object_from_log_line(line: str) -> dict | None:
+    """Parse the JSON object embedded in an Arena log line, if the line has one."""
+    start = line.find("{")
+    if start < 0:
+        return None
+    try:
+        return json.loads(line[start:])
+    except json.JSONDecodeError:
+        return None
+
+
+def int_like(value) -> int | None:
+    """Convert Arena ids/counts to int while rejecting booleans and non-numeric text."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def extract_card_count_from_value(value) -> int | None:
+    """Extract an owned-card count from common Arena collection value shapes."""
+    direct = int_like(value)
+    if direct is not None:
+        return direct
+    if not isinstance(value, dict):
+        return None
+    for key in ("quantity", "Quantity", "count", "Count", "owned", "Owned", "cardCount", "CardCount"):
+        count = int_like(value.get(key))
+        if count is not None:
+            return count
+    return None
+
+
+def card_counts_from_numeric_map(value) -> dict[int, int]:
+    """Read a {grpId: count} style Arena collection map."""
+    if not isinstance(value, dict):
+        return {}
+    counts = {}
+    for raw_id, raw_count in value.items():
+        grp_id = int_like(raw_id)
+        count = extract_card_count_from_value(raw_count)
+        if grp_id is None or count is None or count <= 0:
+            continue
+        counts[grp_id] = max(counts.get(grp_id, 0), count)
+    return counts
+
+
+def card_counts_from_object_list(value) -> dict[int, int]:
+    """Read a list of Arena card-count objects when collection data is not a map."""
+    if not isinstance(value, list):
+        return {}
+    counts = {}
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        grp_id = None
+        for key in ("grpId", "GrpId", "cardId", "CardId", "cardGrpId", "CardGrpId"):
+            grp_id = int_like(item.get(key))
+            if grp_id is not None:
+                break
+        count = extract_card_count_from_value(item)
+        if grp_id is None or count is None or count <= 0:
+            continue
+        counts[grp_id] = max(counts.get(grp_id, 0), count)
+    return counts
+
+
+def is_collection_candidate_path(path: str, key: str, value) -> bool:
+    """Return true for payload locations likely to contain owned collection counts."""
+    blocked = (
+        "Cosmetics", "Deck", "Decks", "Precon", "Formats", "Graph", "Courses",
+        "Course", "CardPool", "PreferredCosmetics", "CardStyles",
+    )
+    if any(part in path for part in blocked):
+        return False
+    if key not in {
+        "Cards",
+        "PlayerCards",
+        "PlayerCardCounts",
+        "cardCounts",
+        "CardCounts",
+        "Collection",
+        "collection",
+    }:
+        return False
+    return bool(card_counts_from_numeric_map(value) or card_counts_from_object_list(value))
+
+
+def owned_card_count_candidates(payload, path: str = "") -> list[dict]:
+    """Find likely owned-card count maps inside an Arena JSON payload."""
+    candidates = []
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            child_path = f"{path}/{key}"
+            if is_collection_candidate_path(child_path, key, value):
+                counts = card_counts_from_numeric_map(value) or card_counts_from_object_list(value)
+                candidates.append({"path": child_path, "counts": counts})
+            candidates.extend(owned_card_count_candidates(value, child_path))
+    elif isinstance(payload, list):
+        for index, value in enumerate(payload[:20]):
+            # Limiting list descent keeps cosmetic/deck dumps cheap while still
+            # covering normal service-response wrappers around collection data.
+            candidates.extend(owned_card_count_candidates(value, f"{path}[{index}]"))
+    return candidates
+
+
+def scan_owned_cards_from_logs(log_paths: list[Path]) -> dict | None:
+    """Scan Arena logs and return the latest largest owned-card collection found."""
+    best = None
+    for log_path in log_paths:
+        try:
+            handle = log_path.open(errors="ignore")
+        except OSError:
+            continue
+        with handle:
+            for line_number, line in enumerate(handle, 1):
+                root = json_object_from_log_line(line)
+                if root is None:
+                    continue
+                for candidate in owned_card_count_candidates(root):
+                    count_total = len(candidate["counts"])
+                    if count_total == 0:
+                        continue
+                    if best is None or count_total >= len(best["counts"]):
+                        best = {
+                            "log_path": log_path,
+                            "line_number": line_number,
+                            "path": candidate["path"],
+                            "counts": candidate["counts"],
+                        }
+    return best
+
+
+def format_owned_card_line(grp_id: int, count: int, metadata: dict[int, dict]) -> str:
+    """Format one owned-card line using card names resolved from the local CARDDB."""
+    info = metadata.get(grp_id, {})
+    name = info.get("name") or f"unknown grpId {grp_id}"
+    set_code = info.get("set")
+    collector = info.get("collector")
+    rarity = info.get("rarity")
+    set_text = f" ({set_code} {collector})" if set_code or collector else ""
+    rarity_text = f" [{rarity}]" if rarity else ""
+    return f"{count}x {name}{set_text}{rarity_text} [grpId {grp_id}]"
+
+
+def print_owned_cards(log_paths: list[Path], carddb_path: Path) -> int:
+    """Print all owned cards from the newest full collection payload in Arena logs."""
+    found = scan_owned_cards_from_logs(log_paths)
+    if not found:
+        print(
+            "No full owned-card collection was found in the parsed Arena logs.\n"
+            "Arena sometimes logs only wildcard/inventory summaries. Open the Collection "
+            "or Deck Builder in MTGA and run this command again if no card-count payload "
+            "has been written yet.",
+            file=sys.stderr,
+        )
+        return 1
+
+    metadata = load_grp_id_to_printing_info(carddb_path)
+    counts = found["counts"]
+    print(f"Owned cards: {len(counts)} unique Arena grpIds")
+    print(f"Source: {found['log_path']}:{found['line_number']} {found['path']}")
+    print("")
+    for grp_id, count in sorted(
+        counts.items(),
+        key=lambda item: ((metadata.get(item[0], {}).get("name") or "").casefold(), item[0]),
+    ):
+        print(format_owned_card_line(grp_id, count, metadata))
+    return 0
+
+
 def parse_carddb_int_list(value: str | None) -> list[int]:
     """Parse comma/colon encoded integer lists from Arena card database fields."""
     if not value:
@@ -2640,6 +2864,42 @@ def mana_amount_from_payment_option(option: dict) -> int:
     return amount
 
 
+def mana_spec_types_from_option(option: dict | None) -> set[str]:
+    """Collect Arena mana spec enum names from one payment option."""
+    return {
+        spec.get("type")
+        for mana in (option or {}).get("mana") or []
+        for spec in mana.get("specs") or []
+        if spec.get("type")
+    }
+
+
+def mana_sources_from_option(option: dict | None) -> list[int]:
+    """Return source object ids Arena attached to a mana payment option."""
+    source_ids = []
+    for mana in (option or {}).get("mana") or []:
+        source_id = mana.get("srcInstanceId")
+        if source_id is not None and source_id not in source_ids:
+            source_ids.append(source_id)
+    return source_ids
+
+
+def action_mana_payment_options(action: dict | None) -> list[dict]:
+    """Return all payment options Arena nested under a cast/action record.
+
+    The normal manaCost field says what was paid. Arena's manaPaymentOptions and
+    autoTapSolution records can also carry rules-relevant specs such as
+    ManaSpecType_CantBeCountered, which is how sources like Delighted Halfling
+    and Cavern of Souls expose their extra effect.
+    """
+    options = list((action or {}).get("manaPaymentOptions") or [])
+    for auto_tap in ((action or {}).get("autoTapSolution") or {}).get("autoTapActions") or []:
+        option = auto_tap.get("manaPaymentOption")
+        if option:
+            options.append(option)
+    return options
+
+
 def mana_amount_from_pool_entry(entry: dict) -> int:
     """Return the amount of mana represented by one Arena mana-pool entry."""
     try:
@@ -4444,6 +4704,41 @@ def extract_game_plays(
                 return action
         return None
 
+    def cast_mana_effect_note_from_action(action):
+        """Summarize Arena mana specs that change how the cast spell behaves."""
+        source_names = []
+        saw_cant_be_countered = False
+        for option in action_mana_payment_options(action):
+            specs = mana_spec_types_from_option(option)
+            if "ManaSpecType_CantBeCountered" not in specs:
+                continue
+            saw_cant_be_countered = True
+            # This source id comes from Arena's payment record, not card-name
+            # guessing. It lets us explain Delighted Halfling, Cavern of Souls,
+            # and similar mana abilities with the same generic path.
+            for source_id in mana_sources_from_option(option):
+                source_name = confident_target_name(source_id) or card_label(source_id)
+                if (
+                    source_name
+                    and source_name not in {"unknown card", "a face-down card"}
+                    and not source_name.startswith(("instance ", "grpId "))
+                    and source_name not in source_names
+                ):
+                    source_names.append(source_name)
+        if not saw_cant_be_countered:
+            return None
+        if source_names:
+            return f"can't be countered via {'; '.join(source_names)} mana"
+        return "can't be countered"
+
+    def append_cast_mana_effect_note(note, effect_note):
+        """Add rules-relevant payment notes inside the existing cast suffix."""
+        if not effect_note:
+            return note
+        if note.endswith("]"):
+            return f"{note[:-1]}; {effect_note}]"
+        return f" [{effect_note}]"
+
     def remember_cast_mana_actions():
         """Cache legal cast-action mana before the later stack event consumes it."""
         for action_wrapper in current_actions:
@@ -4469,6 +4764,7 @@ def extract_game_plays(
                 "available_before": available_before,
                 "seat": seat,
                 "name": card_label(instance_id),
+                "effect_note": cast_mana_effect_note_from_action(action),
             }
 
     def cast_mana_suffix(instance_id, seat, spell_name=None):
@@ -4484,7 +4780,10 @@ def extract_game_plays(
                 cost_amount = mana_cost_amount(action.get("manaCost"))
                 remaining = remaining_mana_count(seat)
                 available = None if remaining is None else remaining + cost_amount
-                return format_cast_mana_note(spent_text, cost_amount, available)
+                return append_cast_mana_effect_note(
+                    format_cast_mana_note(spent_text, cost_amount, available),
+                    cast_mana_effect_note_from_action(action),
+                )
         cached = cast_mana_by_instance.get(instance_id)
         if cached:
             cached_name = cached.get("name")
@@ -4498,15 +4797,21 @@ def extract_game_plays(
                 return ""
             remaining = remaining_mana_count(seat if seat is not None else cached.get("seat"))
             if remaining is not None:
-                return format_cast_mana_note(
+                return append_cast_mana_effect_note(
+                    format_cast_mana_note(
+                        cached.get("spent_text"),
+                        cached.get("cost_amount", 0),
+                        int(cached.get("cost_amount") or 0) + remaining,
+                    ),
+                    cached.get("effect_note"),
+                )
+            return append_cast_mana_effect_note(
+                format_cast_mana_note(
                     cached.get("spent_text"),
                     cached.get("cost_amount", 0),
-                    int(cached.get("cost_amount") or 0) + remaining,
-                )
-            return format_cast_mana_note(
-                cached.get("spent_text"),
-                cached.get("cost_amount", 0),
-                cached.get("available_before"),
+                    cached.get("available_before"),
+                ),
+                cached.get("effect_note"),
             )
         cost_text = format_card_mana_cost((metadata or {}).get("mana_cost"))
         if cost_text:
@@ -6797,6 +7102,14 @@ def extract_game_plays(
                     for msg in root.get("greToClientEvent", {}).get("greToClientMessages", []):
                         gsm = msg.get("gameStateMessage")
                         if not gsm:
+                            actions_req = msg.get("actionsAvailableReq") or {}
+                            if actions_req.get("actions"):
+                                # ActionsAvailableReq often has richer
+                                # autoTapSolution/manaPaymentOption data than
+                                # the later game-state diff. Cache it before
+                                # the actual cast event consumes those details.
+                                current_actions = actions_req.get("actions") or []
+                                remember_cast_mana_actions()
                             if not skipping_duplicate_match:
                                 note_keyword_select_request(msg)
                             continue
@@ -7180,6 +7493,9 @@ def main() -> None:
   Show path discovery diagnostics:
     python3 mtga_extract_games.py --find-paths
 
+  List owned cards if Arena has written a full collection payload to the logs:
+    python3 mtga_extract_games.py --list-owned-cards
+
 macOS path examples:
   LOG="$HOME/Library/Logs/Wizards Of The Coast/MTGA/Player.log"
   CARDDB="$HOME/Library/Application Support/com.wizards.mtga/Downloads/Raw/Raw_CardDatabase_....mtga"
@@ -7206,6 +7522,14 @@ No pip install step is required; this script only uses Python's standard library
         "--find-paths",
         action="store_true",
         help="print path discovery diagnostics and exit",
+    )
+    parser.add_argument(
+        "--list-owned-cards",
+        action="store_true",
+        help=(
+            "scan available Arena logs for a full owned-card collection payload "
+            "and print owned card counts resolved through CARDDB"
+        ),
     )
     parser.add_argument(
         "--debug-annotations",
@@ -7446,6 +7770,10 @@ No pip install step is required; this script only uses Python's standard library
         parser.exit(2, f"{exc}\n")
     if path_warning:
         print(path_warning, file=sys.stderr)
+
+    if args.list_owned_cards:
+        log_paths = player_log_paths_for_reading(player_log, live=False)
+        raise SystemExit(print_owned_cards(log_paths, carddb))
 
     grp_to_name = load_grp_id_to_name(carddb)
     card_metadata = load_grp_id_to_metadata(carddb)

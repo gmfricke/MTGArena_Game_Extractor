@@ -13,6 +13,7 @@ from mtga_extract_games import (
     active_effect_for_resolved_permanent,
     activated_ability_lock_types,
     annotation_details,
+    action_mana_payment_options,
     apply_authoritative_library_count,
     attached_to_player_summary_parts,
     ability_source_instance_id,
@@ -58,12 +59,14 @@ from mtga_extract_games import (
     library_delta_for_zone_transfer,
     library_movement_description,
     life_change_group_source,
+    mana_sources_from_option,
     mana_cost_amount,
     mana_cost_text_amount,
     merge_archive_databases,
     mana_options_from_ability_texts,
     mana_pool_count,
     mana_restriction_from_ability_texts,
+    mana_spec_types_from_option,
     move_copy_resolves_after_revealed_returns,
     non_mana_tap_events,
     object_pronoun,
@@ -1750,6 +1753,32 @@ class WordingTests(unittest.TestCase):
                 activated_ability_lock_types(clarion),
             )
         )
+        halfling_option = {
+            "mana": [
+                {
+                    "color": "ManaColor_Green",
+                    "count": 1,
+                    "srcInstanceId": 743,
+                    "specs": [
+                        {"type": "ManaSpecType_Predictive"},
+                        {"type": "ManaSpecType_Restricted"},
+                        {"type": "ManaSpecType_AdditionalEffect"},
+                        {"type": "ManaSpecType_CantBeCountered"},
+                    ],
+                }
+            ]
+        }
+        action = {
+            "actionType": "ActionType_Cast",
+            "instanceId": 241,
+            "autoTapSolution": {
+                "autoTapActions": [{"manaPaymentOption": halfling_option}]
+            },
+        }
+        self.assertEqual(action_mana_payment_options(action), [halfling_option])
+        self.assertEqual(mana_sources_from_option(halfling_option), [743])
+        self.assertIn("ManaSpecType_CantBeCountered", mana_spec_types_from_option(halfling_option))
+        self.assertNotIn("ManaSpecType_CantBeCountered", mana_spec_types_from_option({"mana": []}))
 
     def test_commander_wording(self):
         """Check commander wording."""
