@@ -2819,7 +2819,7 @@ def new_match_record(number: int, match_id: str, lines: list[str]) -> dict:
 
 def default_archive_db_path() -> Path:
     """Return the default archive database path in the current working directory."""
-    return Path("mtga_seen_games.sqlite3")
+    return Path("mtga_games.sqlite3")
 
 
 def cleaned_transcript_lines(lines: list[str]) -> list[str]:
@@ -3257,6 +3257,65 @@ def archived_transcript_matches(db_path: Path) -> list[dict]:
             }
         )
     return matches
+
+
+def copy_archive_log_sources(destination, source) -> int:
+    """Copy log source metadata from one archive connection into another."""
+    rows = list(
+        source.execute(
+            """
+            SELECT path, size_bytes, modified_at, first_seen_at, last_seen_at
+            FROM log_sources
+            ORDER BY id
+            """
+        )
+    )
+    for path, size_bytes, modified_at, first_seen_at, last_seen_at in rows:
+        destination.execute(
+            """
+            INSERT INTO log_sources (
+                path, size_bytes, modified_at, first_seen_at, last_seen_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(path) DO UPDATE SET
+                size_bytes=excluded.size_bytes,
+                modified_at=excluded.modified_at,
+                last_seen_at=excluded.last_seen_at
+            """,
+            (path, size_bytes, modified_at, first_seen_at, last_seen_at),
+        )
+    return len(rows)
+
+
+def merge_archive_databases(destination_db: Path, source_dbs: list[Path]) -> tuple[int, int, int]:
+    """Merge source archive databases into destination, deduping by match id and game index."""
+    destination_db = destination_db.expanduser()
+    destination_db.parent.mkdir(parents=True, exist_ok=True)
+    normalized_destination = destination_db.resolve()
+
+    all_matches = []
+    copied_log_sources = 0
+    for source_db in source_dbs:
+        source_db = source_db.expanduser()
+        if not source_db.exists():
+            raise FileNotFoundError(f"Archive database does not exist: {source_db}")
+        if source_db.resolve() == normalized_destination:
+            raise ValueError(f"Cannot merge archive database into itself: {source_db}")
+
+        all_matches.extend(archived_transcript_matches(source_db))
+        destination = sqlite3.connect(destination_db)
+        source = sqlite3.connect(source_db)
+        try:
+            ensure_archive_schema(destination)
+            ensure_archive_schema(source)
+            copied_log_sources += copy_archive_log_sources(destination, source)
+            destination.commit()
+        finally:
+            source.close()
+            destination.close()
+
+    inserted, updated, total = archive_seen_games(destination_db, all_matches)
+    return inserted, updated, total
 
 
 def extract_game_plays(
@@ -7162,13 +7221,25 @@ No pip install step is required; this script only uses Python's standard library
         metavar="PATH",
         help=(
             "save parsed games to a SQLite archive keyed by match id; "
-            "default path when no PATH is given: ./mtga_seen_games.sqlite3"
+            "default path when no PATH is given: ./mtga_games.sqlite3"
         ),
     )
     parser.add_argument(
         "--no-archive-db",
         action="store_true",
         help="read and print directly from the available logs without updating the archive",
+    )
+    parser.add_argument(
+        "--merge-archive",
+        "--import-db",
+        dest="merge_archive",
+        nargs="+",
+        type=Path,
+        metavar="PATH",
+        help=(
+            "import one or more existing archive SQLite databases into --archive-db "
+            "without reading Arena logs"
+        ),
     )
     args = parser.parse_args()
 
@@ -7202,6 +7273,26 @@ No pip install step is required; this script only uses Python's standard library
     if args.find_paths:
         diagnostics = discover_input_paths(args.player_log, args.carddb)
         print(format_path_diagnostics(diagnostics))
+        return
+
+    if args.merge_archive:
+        if args.archive_db is None:
+            parser.error("--import-db requires an archive destination; do not use --no-archive-db")
+        try:
+            inserted, updated, total = merge_archive_databases(
+                args.archive_db,
+                args.merge_archive,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            parser.exit(2, f"{exc}\n")
+        print(
+            (
+                f"Archive merge: imported {inserted + updated} game(s) "
+                f"({inserted} new, {updated} already archived). "
+                f"Archive now contains {total} total game(s) at {args.archive_db.expanduser()}."
+            ),
+            file=sys.stderr,
+        )
         return
 
     try:

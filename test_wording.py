@@ -1,6 +1,8 @@
 import unittest
 import os
 import sqlite3
+import subprocess
+import sys
 import tempfile
 from argparse import Namespace
 from unittest.mock import patch
@@ -55,6 +57,7 @@ from mtga_extract_games import (
     life_change_group_source,
     mana_cost_amount,
     mana_cost_text_amount,
+    merge_archive_databases,
     mana_options_from_ability_texts,
     mana_pool_count,
     mana_restriction_from_ability_texts,
@@ -754,9 +757,105 @@ class WordingTests(unittest.TestCase):
             self.assertEqual([match["number"] for match in archived], [1, 2])
             self.assertTrue(archived[1]["lines"][0].startswith("===== GAME 2: MATCH latest-match"))
 
+    def test_archive_merge_imports_new_games_and_updates_existing_games(self):
+        """Check archive merge dedupes by match id and game index."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            destination = Path(tmpdir) / "dest.sqlite3"
+            source = Path(tmpdir) / "source.sqlite3"
+            source_log = Path(tmpdir) / "SourcePlayer.log"
+            source_log.write_text("{}", encoding="utf-8")
+
+            archive_seen_games(
+                destination,
+                [
+                    {
+                        "number": 1,
+                        "match_id": "dest-only",
+                        "lines": ["===== GAME 1: MATCH dest-only =====", "Winner: Me"],
+                        "has_result": True,
+                    },
+                    {
+                        "number": 2,
+                        "match_id": "shared",
+                        "game_index": 1,
+                        "lines": ["===== GAME 2: MATCH shared =====", "Winner: Opponent"],
+                        "has_result": True,
+                    },
+                ],
+            )
+            archive_seen_games(
+                source,
+                [
+                    {
+                        "number": 1,
+                        "match_id": "shared",
+                        "game_index": 1,
+                        "lines": ["===== GAME 1: MATCH shared =====", "Winner: Me"],
+                        "has_result": True,
+                    },
+                    {
+                        "number": 2,
+                        "match_id": "source-only",
+                        "lines": ["===== GAME 2: MATCH source-only =====", "Winner: Me"],
+                        "has_result": True,
+                    },
+                ],
+                [source_log],
+            )
+
+            self.assertEqual(merge_archive_databases(destination, [source]), (1, 1, 3))
+
+            archived = archived_transcript_matches(destination)
+            self.assertEqual([match["match_id"] for match in archived], ["dest-only", "shared", "source-only"])
+            shared = next(match for match in archived if match["match_id"] == "shared")
+            self.assertIn("Winner: Me", shared["lines"])
+
+            con = sqlite3.connect(destination)
+            self.assertEqual(
+                con.execute("SELECT count(*) FROM log_sources").fetchone()[0],
+                1,
+            )
+            con.close()
+
+    def test_import_db_cli_merges_into_archive_db(self):
+        """Check --import-db imports a source archive into the selected archive DB."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            destination = Path(tmpdir) / "dest.sqlite3"
+            source = Path(tmpdir) / "source.sqlite3"
+            archive_seen_games(
+                source,
+                [
+                    {
+                        "number": 1,
+                        "match_id": "source-match",
+                        "lines": ["===== GAME 1: MATCH source-match =====", "Winner: Me"],
+                        "has_result": True,
+                    },
+                ],
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "mtga_extract_games.py",
+                    "--archive-db",
+                    str(destination),
+                    "--import-db",
+                    str(source),
+                ],
+                text=True,
+                capture_output=True,
+                timeout=30,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Archive merge: imported 1 game(s) (1 new, 0 already archived)", result.stderr)
+            archived = archived_transcript_matches(destination)
+            self.assertEqual([match["match_id"] for match in archived], ["source-match"])
+
     def test_default_archive_db_path_uses_current_directory(self):
         """Check default archive db path uses current directory."""
-        self.assertEqual(default_archive_db_path(), Path("mtga_seen_games.sqlite3"))
+        self.assertEqual(default_archive_db_path(), Path("mtga_games.sqlite3"))
 
     def test_archive_schema_migrates_legacy_transcript_table(self):
         """Check archive schema migrates legacy transcript table."""
