@@ -2656,6 +2656,23 @@ def copied_object_label(base_name: str | None, is_copy: bool) -> str | None:
     return base_name
 
 
+def phrase_power_toughness_mod(source: str | None, target: str, power: int, toughness: int) -> str:
+    """Render Arena's generic P/T modification annotation as readable rules text."""
+    power_text = f"{power:+d}"
+    toughness_text = f"{toughness:+d}"
+    effect = f"{target} gets {power_text}/{toughness_text}"
+    if source == target:
+        source = None
+    return phrase_source_action(source, effect)
+
+
+def adventure_exile_line(card_name: str, adventure_name: str | None) -> str | None:
+    """Explain that an adventure spell resolved by exiling its parent card."""
+    if not adventure_name or adventure_name == card_name:
+        return None
+    return f"{card_name} is exiled on an adventure"
+
+
 def ability_source_instance_id(obj: dict | None) -> int | None:
     """Return the source permanent/spell instance for an Arena ability object."""
     if not obj or obj.get("type") != "GameObjectType_Ability":
@@ -3802,6 +3819,7 @@ def extract_game_plays(
     remembered_object_labels = {}
     stack_display_names = {}
     emitted_cast_instance_ids = set()
+    emitted_cast_line_instance_ids = set()
     ability_trigger_ids = set()
     ability_source_names = {}
     pending_stack_casts = {}
@@ -4415,6 +4433,14 @@ def extract_game_plays(
         }
         return labels.get(zone_type, clean_arena_enum(zone_type, "ZoneType_") or "unknown zone")
 
+    def is_exile_zone(zone_id):
+        """Return true when an Arena zone id currently points at exile."""
+        return zones.get(zone_id, {}).get("type") == "ZoneType_Exile"
+
+    def is_stack_or_limbo_zone(zone_id):
+        """Return true for transient spell/ability zones used while resolving."""
+        return zones.get(zone_id, {}).get("type") in {"ZoneType_Stack", "ZoneType_Limbo"}
+
     def zone_move_owner(ann, details):
         """Prefer the player whose destination changed for draw/seek/put style events."""
         return owner_label(zone_move_owner_seat(ann, details))
@@ -4571,6 +4597,8 @@ def extract_game_plays(
             # hidden cast and the resolve. Preserve the emitted-cast marker so
             # the fallback does not narrate the same spell twice.
             emitted_cast_instance_ids.add(new_id)
+        if orig_id in emitted_cast_line_instance_ids:
+            emitted_cast_line_instance_ids.add(new_id)
 
     def card_label(instance_id, fallback_grp_id=None):
         """Return a readable card label for an instance, falling back to grpId."""
@@ -5650,6 +5678,7 @@ def extract_game_plays(
             if instance_id in emitted_cast_instance_ids:
                 return
             emitted_cast_instance_ids.add(instance_id)
+            emitted_cast_line_instance_ids.add(instance_id)
             text = cast_text_with_mana(
                 pending.get("source_id", instance_id),
                 pending["text"],
@@ -5713,7 +5742,46 @@ def extract_game_plays(
             return
         actor = owner_label(actor_seat)
         emitted_cast_instance_ids.add(instance_id)
+        emitted_cast_line_instance_ids.add(instance_id)
         emit(phrase_player_action(actor, "cast", cast_text_with_mana(instance_id, name, actor_seat)))
+
+    def emit_missing_effect_source_cast(instance_id):
+        """Emit a source spell cast before its generic effect annotation.
+
+        Some adventure and modal spell paths expose the effect annotation before
+        the parser has enough information to print the original CastSpell line.
+        When the affector is itself a nonland card object and no cast line was
+        emitted, this keeps the transcript from showing a spell effect with no
+        spell cast. The card name still comes from CARDDB via the object's grpId.
+        """
+        if instance_id is None:
+            return
+        obj = objects.get(instance_id)
+        name = card_label(instance_id)
+        if not obj or obj.get("type") != "GameObjectType_Card":
+            return
+        if "CardType_Land" in (obj.get("cardTypes") or []):
+            return
+        if not is_stack_or_limbo_zone(obj.get("zoneId")):
+            return
+        if obj.get("isCopy"):
+            return
+        if not should_emit_resolve_line(name, instance_id):
+            return
+        if current_match_record is not None:
+            cast_needle = f" casts {name}"
+            if any(cast_needle in line for line in current_match_record.get("lines", [])):
+                emitted_cast_line_instance_ids.add(instance_id)
+                return
+        elif instance_id in emitted_cast_line_instance_ids:
+            return
+        actor_seat = object_controller(instance_id) or object_owner(instance_id)
+        if not actor_seat:
+            return
+        emitted_cast_instance_ids.add(instance_id)
+        emitted_cast_line_instance_ids.add(instance_id)
+        pending_stack_casts.pop(instance_id, None)
+        emit(phrase_player_action(owner_label(actor_seat), "cast", cast_text_with_mana(instance_id, name, actor_seat)))
 
     def flush_pending_cast_for_affector(affector_id):
         """Emit delayed source casts before their triggered effects are narrated."""
@@ -5935,9 +6003,12 @@ def extract_game_plays(
                 }
             else:
                 emitted_cast_instance_ids.add(iid)
+                emitted_cast_line_instance_ids.add(iid)
                 emit(phrase_player_action(owner, "cast", f"{cast_text}{cast_mana_suffix(iid, caster_seat, cast_text)}"))
         elif category == "Resolve":
             flush_pending_event_groups()
+            adventure_name = stack_display_names.get(iid)
+            card_name_before_resolve = card_label(iid)
             if detail_name and not detail_name.startswith("grpId "):
                 update_pending_stack_cast_name(iid, detail_name)
             else:
@@ -5955,6 +6026,7 @@ def extract_game_plays(
                 # named spells do not appear to resolve from nowhere.
                 actor = owner_label(object_controller(iid)) if object_controller(iid) else owner
                 emitted_cast_instance_ids.add(iid)
+                emitted_cast_line_instance_ids.add(iid)
                 actor_seat = object_controller(iid)
                 emit(phrase_player_action(actor, "cast", cast_text_with_mana(iid, name, actor_seat)))
             effect_text = active_effect_for_resolved_permanent(name, owner)
@@ -5964,6 +6036,14 @@ def extract_game_plays(
                 # Anonymous stack objects are usually triggered/copy ability
                 # bookkeeping. Emitting raw ids is less useful than silence.
                 emit(f"{name} resolves")
+            if is_exile_zone(details.get("zone_dest")):
+                # Adventure spells use a separate stack grpId/name, then Arena
+                # changes the resolving object to the parent card in exile.
+                # If we carried a distinct stack name across ObjectIdChanged,
+                # explain that exile movement without hard-coding card names.
+                line = adventure_exile_line(card_name_before_resolve, adventure_name)
+                if line:
+                    emit(line)
         elif category == "Copy":
             flush_pending_event_groups()
             flush_pending_cast_for_copy_name(name)
@@ -6103,6 +6183,7 @@ def extract_game_plays(
 
     def emit_life_change(ann, gsm):
         """Emit life gain/loss lines from ModifiedLife annotations."""
+        flush_pending_cast_for_affector(ann.get("affectorId"))
         details = detail_dict(ann.get("details"))
         delta = details.get("life")
         affected = ann.get("affectedIds") or []
@@ -6153,6 +6234,32 @@ def extract_game_plays(
         else:
             flush_pending_event_groups()
             emit(phrase_life_change(owner_label(seat), delta, total))
+
+    def emit_power_toughness_mod(ann, gsm):
+        """Emit source-attributed temporary/permanent P/T modifications.
+
+        Arena exposes many spell effects as generic PowerToughnessModCreated
+        annotations. Using the affector and affected ids here is more robust
+        than card-name special cases, and also gives delayed cast lines a
+        confident target before the spell resolves.
+        """
+        details = detail_dict(ann.get("details"))
+        power = details.get("power")
+        toughness = details.get("toughness")
+        affected = ann.get("affectedIds") or []
+        affector = ann.get("affectorId")
+        if not affected or not isinstance(power, int) or not isinstance(toughness, int):
+            return
+        target_id = affected[0]
+        if affector is not None and target_id not in known_targets_by_source.get(affector, []):
+            known_targets_by_source[affector].append(target_id)
+            target_name = confident_target_name(target_id)
+            if target_name:
+                known_target_names_by_source[affector].append(target_name)
+        flush_pending_event_groups()
+        flush_pending_cast_for_affector(affector)
+        emit_missing_effect_source_cast(affector)
+        emit(phrase_power_toughness_mod(source_label(affector), card_label(target_id), power, toughness))
 
     def emit_choice_result(ann, gsm):
         """Emit readable choice-result lines from Arena's numeric choice annotations."""
@@ -6868,6 +6975,8 @@ def extract_game_plays(
             emit_zone_transfer(ann, gsm)
         elif "AnnotationType_ModifiedLife" in ann_types:
             emit_life_change(ann, gsm)
+        elif "AnnotationType_PowerToughnessModCreated" in ann_types:
+            emit_power_toughness_mod(ann, gsm)
         elif "AnnotationType_ChoiceResult" in ann_types:
             emit_choice_result(ann, gsm)
         elif "AnnotationType_DamageDealt" in ann_types:

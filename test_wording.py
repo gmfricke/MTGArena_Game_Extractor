@@ -23,6 +23,7 @@ from mtga_extract_games import (
     append_target_phrase,
     archive_seen_games,
     archived_transcript_matches,
+    adventure_exile_line,
     available_resource_lines,
     base_cast_name,
     build_choice_value_names,
@@ -92,6 +93,7 @@ from mtga_extract_games import (
     phrase_keyword_choice_value,
     phrase_keyword_choice_values,
     phrase_mulligan,
+    phrase_power_toughness_mod,
     phrase_move_to_zone,
     phrase_mill_summary,
     preferred_zone_transfer_name,
@@ -2111,6 +2113,27 @@ class WordingTests(unittest.TestCase):
             "Petty Theft",
         )
         self.assertEqual(resolve_stack_name(908, "Brazen Borrower", {}), "Brazen Borrower")
+        self.assertEqual(
+            adventure_exile_line("Virtue of Persistence", "Locthwain Scorn"),
+            "Virtue of Persistence is exiled on an adventure",
+        )
+        self.assertIsNone(adventure_exile_line("Virtue of Persistence", "Virtue of Persistence"))
+
+    def test_power_toughness_mod_wording(self):
+        """Check generic spell/effect P/T modification wording."""
+        self.assertEqual(
+            phrase_power_toughness_mod(
+                "Locthwain Scorn",
+                "Giada, Font of Hope",
+                -3,
+                -3,
+            ),
+            "Locthwain Scorn: Giada, Font of Hope gets -3/-3",
+        )
+        self.assertEqual(
+            phrase_power_toughness_mod(None, "Mossborn Hydra", 2, 2),
+            "Mossborn Hydra gets +2/+2",
+        )
 
     def test_countered_spell_copy_wording_is_distinct(self):
         """Check countered spell copy wording is distinct."""
