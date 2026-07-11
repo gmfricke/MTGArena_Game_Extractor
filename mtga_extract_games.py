@@ -1868,6 +1868,36 @@ def remove_near_duplicate_cast_lines(lines: list[str]) -> list[str]:
     return cleaned
 
 
+def remove_repeated_cast_blocks(lines: list[str]) -> list[str]:
+    """Remove adjacent repeated cast blocks emitted by low-fidelity updates."""
+    cleaned = []
+    index = 0
+    while index < len(lines):
+        if not cast_line_identity(lines[index]):
+            cleaned.append(lines[index])
+            index += 1
+            continue
+
+        max_block_len = min(6, (len(lines) - index) // 2)
+        for block_len in range(max_block_len, 1, -1):
+            first = lines[index : index + block_len]
+            second = lines[index + block_len : index + (block_len * 2)]
+            first_identities = [cast_line_identity(line) for line in first]
+            second_identities = [cast_line_identity(line) for line in second]
+            if (
+                all(first_identities)
+                and first_identities == second_identities
+                and len(set(first_identities)) == block_len
+            ):
+                cleaned.extend(first)
+                index += block_len * 2
+                break
+        else:
+            cleaned.append(lines[index])
+            index += 1
+    return cleaned
+
+
 def transcript_diagnostics(lines: list[str]) -> list[str]:
     """Return suspicious transcript artifacts that should be reviewed by a human."""
     warnings = []
@@ -2827,14 +2857,21 @@ def cleaned_transcript_lines(lines: list[str]) -> list[str]:
     return remove_redundant_match_winner_lines(
         combine_adjacent_attack_lines(
             combine_duplicate_transcript_lines(
-                remove_near_duplicate_cast_lines(
-                    move_copy_resolves_after_revealed_returns(
-                        combine_repeated_damage_life_sequences(lines)
+                remove_repeated_cast_blocks(
+                    remove_near_duplicate_cast_lines(
+                        move_copy_resolves_after_revealed_returns(
+                            combine_repeated_damage_life_sequences(lines)
+                        )
                     )
                 )
             )
         )
     )
+
+
+def is_placeholder_transcript_lines(lines: list[str]) -> bool:
+    """Return true for Arena shell records that are not real games."""
+    return any("Seat None" in line or "Team None" in line for line in lines)
 
 
 def transcript_with_game_header(lines: list[str], number: int, match_id: str) -> list[str]:
@@ -3047,6 +3084,8 @@ def archive_seen_games(
     records = []
     game_index_counts = Counter()
     for match in matches:
+        if is_placeholder_transcript_lines(match["lines"]):
+            continue
         match_id = match["match_id"]
         if match.get("game_index") is None:
             game_index_counts[match_id] += 1
@@ -3235,13 +3274,16 @@ def archived_transcript_matches(db_path: Path) -> list[dict]:
     con.close()
     matches = []
     for game_archive_index, match_id, match_archive_index, game_index, has_result, transcript in rows:
+        lines = transcript.splitlines()
+        if is_placeholder_transcript_lines(lines):
+            continue
         matches.append(
             {
                 "number": game_archive_index,
                 "match_id": match_id,
                 "match_number": match_archive_index,
                 "game_index": game_index,
-                "lines": transcript.splitlines(),
+                "lines": lines,
                 "events": [],
                 "debug_hits": [],
                 "debug_seen_objects": set(),
@@ -6328,6 +6370,8 @@ def extract_game_plays(
             winning_team_id = result.get("winningTeamId")
             reason = result.get("reason")
             result_type = result.get("result")
+            if winning_team_id is None:
+                continue
             key = (current_match, scope, winning_team_id, reason, result_type)
             if key in seen_results:
                 continue

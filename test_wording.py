@@ -109,9 +109,11 @@ from mtga_extract_games import (
     game_has_commanders,
     grouped_name_phrase,
     has_live_selection_conflict,
+    is_placeholder_transcript_lines,
     modifier_summary_suffix,
     remove_redundant_match_winner_lines,
     remove_near_duplicate_cast_lines,
+    remove_repeated_cast_blocks,
     resolve_stack_name,
     replace_base_cast_name,
     resolve_input_paths,
@@ -365,6 +367,47 @@ class WordingTests(unittest.TestCase):
                 "-- Beginning of combat --",
                 "I choose flying for Steel Seraph (keyword)",
             ],
+        )
+
+    def test_repeated_cast_blocks_are_removed(self):
+        """Check adjacent repeated cast blocks from low-fidelity updates are suppressed."""
+        self.assertEqual(
+            remove_repeated_cast_blocks(
+                [
+                    "I draw Forest",
+                    "I cast Sarkhan, Soul Aflame",
+                    "I cast Ziatora, the Incinerator",
+                    "I cast Sarkhan, Soul Aflame",
+                    "I cast Ziatora, the Incinerator",
+                    "Opponent concedes",
+                ]
+            ),
+            [
+                "I draw Forest",
+                "I cast Sarkhan, Soul Aflame",
+                "I cast Ziatora, the Incinerator",
+                "Opponent concedes",
+            ],
+        )
+
+    def test_placeholder_transcript_lines_are_detected(self):
+        """Check Arena shell records are detected as placeholder transcripts."""
+        self.assertTrue(
+            is_placeholder_transcript_lines(
+                [
+                    "=== Turn 1: Seat None ===",
+                    "Match winner: Team None",
+                ]
+            )
+        )
+        self.assertFalse(
+            is_placeholder_transcript_lines(
+                [
+                    "=== Turn 1: Me ===",
+                    "Opponent concedes",
+                    "Winner: Me",
+                ]
+            )
         )
 
     def test_transcript_diagnostics_find_suspicious_artifacts(self):
@@ -723,6 +766,38 @@ class WordingTests(unittest.TestCase):
             self.assertEqual([match["match_number"] for match in archived], [1, 1])
             self.assertEqual([match["game_index"] for match in archived], [1, 2])
             self.assertEqual([match["match_id"] for match in archived], ["match-bo3", "match-bo3"])
+
+    def test_archive_ignores_placeholder_games(self):
+        """Check Arena shell placeholder records are not archived."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "seen.sqlite3"
+            matches = [
+                {
+                    "number": 1,
+                    "match_id": "placeholder",
+                    "lines": [
+                        "===== GAME 1: MATCH placeholder =====",
+                        "=== Turn 1: Seat None ===",
+                        "Match winner: Team None",
+                    ],
+                    "has_result": True,
+                },
+                {
+                    "number": 2,
+                    "match_id": "real-match",
+                    "lines": [
+                        "===== GAME 2: MATCH real-match =====",
+                        "=== Turn 1: Me ===",
+                        "Opponent concedes",
+                        "Winner: Me",
+                    ],
+                    "has_result": True,
+                },
+            ]
+
+            self.assertEqual(archive_seen_games(db_path, matches), (1, 0, 1))
+            archived = archived_transcript_matches(db_path)
+            self.assertEqual([match["match_id"] for match in archived], ["real-match"])
 
     def test_archive_refresh_reorders_current_parse_to_end(self):
         """Check current parsed log order wins over stale archive insertion order."""
