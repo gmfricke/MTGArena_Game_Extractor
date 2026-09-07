@@ -12,6 +12,7 @@ from pathlib import Path
 from mtga_extract_games import (
     active_effect_for_resolved_permanent,
     activated_ability_lock_types,
+    annotation_details,
     apply_authoritative_library_count,
     attached_to_player_summary_parts,
     ability_source_instance_id,
@@ -90,6 +91,7 @@ from mtga_extract_games import (
     phrase_move_to_zone,
     phrase_mill_summary,
     preferred_zone_transfer_name,
+    reconcile_zone_transfer_objects,
     phrase_player_has_counter,
     phrase_player_counter_change,
     phrase_player_action,
@@ -325,6 +327,31 @@ class WordingTests(unittest.TestCase):
             ),
             "Blind Obedience from command zone; commander tax 2",
         )
+
+    def test_zone_transfer_annotations_reconcile_cached_object_zones(self):
+        """Annotation-only moves update cached zones in event order."""
+        objects = {17: {"instanceId": 17, "zoneId": 3}, 18: {"instanceId": 18, "zoneId": 3}}
+        annotations = [
+            {
+                "type": ["AnnotationType_ZoneTransfer"],
+                "affectedIds": [17],
+                "details": [{"key": "zone_dest", "valueInt32": [7]}],
+            },
+            {
+                "type": ["AnnotationType_ZoneTransfer"],
+                "affectedIds": [17],
+                "details": [{"key": "zone_dest", "valueInt32": [9]}],
+            },
+        ]
+
+        self.assertEqual(annotation_details(annotations[0]["details"])["zone_dest"], 7)
+        known_zones = reconcile_zone_transfer_objects(objects, annotations)
+
+        self.assertEqual(objects[17]["zoneId"], 9)
+        self.assertEqual(objects[18]["zoneId"], 3)
+        objects[17] = {"instanceId": 17, "zoneId": 3}
+        reconcile_zone_transfer_objects(objects, [], known_zones)
+        self.assertEqual(objects[17]["zoneId"], 9)
 
     def test_adjacent_duplicate_transcript_lines_are_combined(self):
         """Check adjacent duplicate transcript lines are combined."""

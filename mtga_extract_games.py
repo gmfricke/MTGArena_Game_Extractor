@@ -2290,6 +2290,42 @@ def preferred_zone_transfer_name(detail_name: str | None, fallback_name: str | N
     return fallback_name or detail_name or "unknown card"
 
 
+def annotation_details(details: list[dict] | None) -> dict:
+    """Convert Arena's typed annotation details into ordinary values."""
+    result = {}
+    for detail in details or []:
+        value = None
+        for key in ("valueString", "valueInt32", "valueBool", "valueFloat", "valueDouble"):
+            values = detail.get(key)
+            if values:
+                value = values[0] if len(values) == 1 else values
+                break
+        result[detail.get("key")] = value
+    return result
+
+
+def reconcile_zone_transfer_objects(
+    objects: dict,
+    annotations: list[dict] | None,
+    known_zones: dict | None = None,
+) -> dict:
+    """Apply and remember annotation-only zone moves in event order."""
+    known_zones = known_zones if known_zones is not None else {}
+    for annotation in annotations or []:
+        if "AnnotationType_ZoneTransfer" not in set(annotation.get("type") or []):
+            continue
+        destination = annotation_details(annotation.get("details")).get("zone_dest")
+        if destination is None:
+            continue
+        for instance_id in annotation.get("affectedIds") or []:
+            known_zones[instance_id] = destination
+    for instance_id, destination in known_zones.items():
+        obj = objects.get(instance_id)
+        if obj is not None:
+            obj["zoneId"] = destination
+    return known_zones
+
+
 def base_cast_name(cast_text: str) -> str:
     """Strip transcript suffixes so delayed casts can be matched by spell name."""
     return (
@@ -3431,6 +3467,7 @@ def extract_game_plays(
     """Extract a readable play transcript from MTGA Player.log."""
     zones = {}
     objects = {}
+    annotation_object_zones = {}
     players = {}
     team_to_seats = {}
     seen_annotations = set()
@@ -3828,6 +3865,7 @@ def extract_game_plays(
         clear_all(
             zones,
             objects,
+            annotation_object_zones,
             players,
             team_to_seats,
             remembered_object_labels,
@@ -6369,6 +6407,11 @@ def extract_game_plays(
                 if label:
                     remembered_object_labels[obj["instanceId"]] = label
 
+        # Diff messages can report a move only as a ZoneTransfer annotation.
+        # Reconcile it before emitting a turn snapshot so departed permanents
+        # do not linger and newly resolved permanents appear immediately.
+        reconcile_zone_transfer_objects(objects, gsm.get("annotations"), annotation_object_zones)
+
         for player in gsm.get("players", []):
             seat = player.get("systemSeatNumber")
             if seat is None:
@@ -6422,6 +6465,7 @@ def extract_game_plays(
                 {"gameStateId": gsm.get("gameStateId")},
             )
             objects.pop(deleted_id, None)
+            annotation_object_zones.pop(deleted_id, None)
 
     def emit_match_results(gsm):
         """Emit game/match result lines once per unique Arena result record."""
