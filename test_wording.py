@@ -74,7 +74,6 @@ from mtga_extract_games import (
     power_toughness_summary,
     player_log_paths_for_reading,
     phrase_commander_cast_note,
-    phrase_commander_damage,
     phrase_concede_result,
     phrase_damage,
     phrase_choice_value,
@@ -1757,14 +1756,6 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(
             phrase_commander_cast_note(2),
             "commander cast #2; next commander tax +4",
-        )
-        self.assertEqual(
-            phrase_commander_damage("Giada, Font of Hope", 4, "Opponent", 8),
-            "Commander damage: Giada, Font of Hope deals 4 damage to Opponent (8 total)",
-        )
-        self.assertEqual(
-            phrase_commander_damage("Zacama, Primal Calamity", 7, "Me", 7),
-            "Commander damage: Zacama, Primal Calamity deals 7 damage to me (7 total)",
         )
         self.assertEqual(
             phrase_damage("Lyra Dawnbringer", 6, "Steel Seraph"),

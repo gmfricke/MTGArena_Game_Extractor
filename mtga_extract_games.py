@@ -1249,7 +1249,7 @@ def transcript_line_style(line: str) -> str | None:
     perspective = transcript_line_perspective(line)
     if perspective:
         return perspective
-    if "trigger:" in line or "ability:" in line or line.startswith("Commander damage:"):
+    if "trigger:" in line or "ability:" in line:
         return "state"
     return None
 
@@ -1627,14 +1627,6 @@ def phrase_result(winner: str, scope_text: str, reason_text: str | None = None) 
 def phrase_commander_cast_note(cast_count: int) -> str:
     """Render commander cast count and the tax that applies to the next cast."""
     return f"commander cast #{cast_count}; next commander tax +{cast_count * 2}"
-
-
-def phrase_commander_damage(source: str, damage: int, target_label: str, total: int) -> str:
-    """Render commander damage with the running total against a player."""
-    return (
-        f"Commander damage: {source} deals {damage} damage to "
-        f"{object_pronoun(target_label)} ({total} total)"
-    )
 
 
 def phrase_damage(source: str | None, damage: int, target: str) -> str:
@@ -3517,7 +3509,6 @@ def extract_game_plays(
     seen_results = set()
     seen_choices = set()
     seen_state_events = set()
-    seen_commander_damage = set()
     seen_damage_events = set()
     seen_no_combat_damage = set()
     seen_enters_attacking = set()
@@ -3536,7 +3527,6 @@ def extract_game_plays(
     commander_grps_by_seat = {}
     commander_instance_ids = set()
     commander_cast_counts = Counter()
-    commander_damage = Counter()
     player_counters = Counter()
     object_counters = defaultdict(Counter)
     keyword_choices_by_source = {}
@@ -3916,7 +3906,6 @@ def extract_game_plays(
             pending_life_groups,
             active_effects,
             commander_grps_by_seat,
-            commander_damage,
             player_counters,
             object_counters,
             keyword_choices_by_source,
@@ -3927,7 +3916,6 @@ def extract_game_plays(
         )
         clear_all(
             seen_combat,
-            seen_commander_damage,
             seen_damage_events,
             seen_no_combat_damage,
             seen_enters_attacking,
@@ -5315,17 +5303,6 @@ def extract_game_plays(
                     f"{card_name_from_grp(grp_id)} is +{tax}"
                 )
 
-        for (source_seat, target_seat), amount in sorted(commander_damage.items()):
-            if amount:
-                commander_names = [
-                    card_name_from_grp(grp_id)
-                    for grp_id in sorted(commander_grps_by_seat.get(source_seat, set()))
-                ]
-                source = " / ".join(name for name in commander_names if name) or "Commander"
-                lines.append(
-                    f"{source} has dealt {amount} commander damage to "
-                    f"{object_pronoun(owner_label(target_seat))}"
-                )
         for source_id, choice in sorted(
             keyword_choices_by_source.items(),
             key=lambda item: item[1]["source"],
@@ -6134,50 +6111,6 @@ def extract_game_plays(
             remove_active_effects_with_prefix(("teferi_protection", seat))
             remove_active_effects_with_prefix(("teferi_life_total", seat))
 
-    def damage_annotation_commander_info(ann, gsm):
-        """Return commander combat damage info for player targets, when applicable."""
-        affected = ann.get("affectedIds") or []
-        source_id = ann.get("affectorId")
-        if not affected or affected[0] not in (1, 2):
-            return None
-        if gsm.get("turnInfo", {}).get("phase") != "Phase_Combat":
-            return None
-
-        source = objects.get(source_id, {})
-        source_seat = source.get("controllerSeatId") or source.get("ownerSeatId")
-        source_grp = source.get("grpId") or source.get("objectSourceGrpId")
-        try:
-            source_grp = int(source_grp) if source_grp is not None else None
-        except (TypeError, ValueError):
-            source_grp = None
-        is_commander = (
-            source_id in commander_instance_ids
-            or source_grp in commander_grps_by_seat.get(source_seat, set())
-        )
-        if not is_commander or source_seat is None:
-            return None
-        return source_id, source_seat, affected[0]
-
-    def emit_commander_damage(ann, gsm):
-        """Track combat damage from commanders to players when Arena exposes it."""
-        details = detail_dict(ann.get("details"))
-        damage = details.get("damage")
-        if not isinstance(damage, int) or damage <= 0:
-            return
-        commander_info = damage_annotation_commander_info(ann, gsm)
-        if not commander_info:
-            return
-        source_id, source_seat, target_seat = commander_info
-
-        key = (current_match, gsm.get("gameStateId"), ann.get("id"), source_id, target_seat)
-        if key in seen_commander_damage:
-            return
-        seen_commander_damage.add(key)
-        commander_damage[(source_seat, target_seat)] += damage
-        total = commander_damage[(source_seat, target_seat)]
-        flush_pending_event_groups()
-        emit(phrase_commander_damage(card_label(source_id), damage, owner_label(target_seat), total))
-
     def emit_damage(ann, gsm):
         """Emit generic damage lines for player and permanent damage records."""
         details = detail_dict(ann.get("details"))
@@ -6185,8 +6118,6 @@ def extract_game_plays(
         affected = ann.get("affectedIds") or []
         source_id = ann.get("affectorId")
         if not isinstance(damage, int) or damage <= 0 or not affected:
-            return
-        if damage_annotation_commander_info(ann, gsm):
             return
 
         target_id = affected[0]
@@ -6609,7 +6540,6 @@ def extract_game_plays(
         elif "AnnotationType_ChoiceResult" in ann_types:
             emit_choice_result(ann, gsm)
         elif "AnnotationType_DamageDealt" in ann_types:
-            emit_commander_damage(ann, gsm)
             emit_damage(ann, gsm)
             emit_infect_damage(ann, gsm)
             emit_no_combat_damage(ann, gsm)
