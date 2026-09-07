@@ -2746,19 +2746,58 @@ def card_has_type(obj: dict | None, metadata: dict | None, arena_type: str, type
     return bool(metadata and type_number in set(metadata.get("type_numbers") or []))
 
 
+CARD_TYPE_NUMBERS = {
+    "CardType_Artifact": 1,
+    "CardType_Creature": 2,
+    "CardType_Enchantment": 3,
+    "CardType_Land": 5,
+    "CardType_Planeswalker": 8,
+    "CardType_Battle": 12,
+}
+
+
+def activated_ability_lock_types(metadata: dict | None) -> set[str]:
+    """Return card types whose activated abilities are stopped by static text."""
+    locked = set()
+    for text in (metadata or {}).get("ability_texts") or []:
+        lower = text.casefold()
+        if "activated abilities of" not in lower or "can't be activated" not in lower:
+            continue
+        if "artifacts" in lower:
+            locked.add("CardType_Artifact")
+        if "creatures" in lower:
+            locked.add("CardType_Creature")
+        if "planeswalkers" in lower:
+            locked.add("CardType_Planeswalker")
+    return locked
+
+
+def object_matches_any_card_type(
+    obj: dict | None,
+    metadata: dict | None,
+    arena_types: set[str],
+) -> bool:
+    """Return true when an object has any of the requested card types."""
+    return any(
+        card_has_type(obj, metadata, arena_type, CARD_TYPE_NUMBERS[arena_type])
+        for arena_type in arena_types
+        if arena_type in CARD_TYPE_NUMBERS
+    )
+
+
 def card_is_land(obj: dict | None, metadata: dict | None) -> bool:
     """Return true when a card is known to be a land."""
-    return card_has_type(obj, metadata, "CardType_Land", 5)
+    return card_has_type(obj, metadata, "CardType_Land", CARD_TYPE_NUMBERS["CardType_Land"])
 
 
 def card_is_nonland_permanent(obj: dict | None, metadata: dict | None) -> bool:
     """Return true for known nonland permanent card types."""
     permanent_checks = (
-        ("CardType_Artifact", 1),
-        ("CardType_Creature", 2),
-        ("CardType_Enchantment", 3),
-        ("CardType_Planeswalker", 8),
-        ("CardType_Battle", 12),
+        ("CardType_Artifact", CARD_TYPE_NUMBERS["CardType_Artifact"]),
+        ("CardType_Creature", CARD_TYPE_NUMBERS["CardType_Creature"]),
+        ("CardType_Enchantment", CARD_TYPE_NUMBERS["CardType_Enchantment"]),
+        ("CardType_Planeswalker", CARD_TYPE_NUMBERS["CardType_Planeswalker"]),
+        ("CardType_Battle", CARD_TYPE_NUMBERS["CardType_Battle"]),
     )
     if card_is_land(obj, metadata):
         return False
@@ -4763,6 +4802,22 @@ def extract_game_plays(
         """Return a known source-level mana spending restriction."""
         return mana_restriction_from_ability_texts(metadata_for_object(objects.get(instance_id, {})))
 
+    def activated_ability_locked_types():
+        """Return card types currently unable to activate abilities."""
+        battlefield_zone_ids = zone_ids_by_type("ZoneType_Battlefield")
+        locked = set()
+        for obj in objects.values():
+            if obj.get("zoneId") not in battlefield_zone_ids:
+                continue
+            locked.update(activated_ability_lock_types(metadata_for_object(obj)))
+        return locked
+
+    def mana_source_is_locked(obj, locked_types):
+        """Return true when a static effect stops this source's mana ability."""
+        if not locked_types:
+            return False
+        return object_matches_any_card_type(obj, metadata_for_object(obj), locked_types)
+
     def available_mana_line_from_actions(seat):
         """Summarize currently activatable mana sources from Arena legal actions."""
         total, known_options, unknown_count, restricted = available_mana_snapshot_from_actions(seat)
@@ -4775,6 +4830,7 @@ def extract_game_plays(
         known_options = []
         restricted = []
         seen_sources = set()
+        locked_types = activated_ability_locked_types()
         for action_wrapper in current_actions:
             action = action_wrapper.get("action") or action_wrapper
             if action.get("actionType") != "ActionType_Activate_Mana":
@@ -4785,6 +4841,8 @@ def extract_game_plays(
             source_obj = objects.get(source_id, {})
             controller = source_obj.get("controllerSeatId") or source_obj.get("ownerSeatId")
             if controller != seat:
+                continue
+            if mana_source_is_locked(source_obj, locked_types):
                 continue
             options = action.get("manaPaymentOptions") or []
             if not options:
@@ -4837,6 +4895,7 @@ def extract_game_plays(
         unknown_count = 0
         known_options = []
         restricted = []
+        locked_types = activated_ability_locked_types()
         for obj in objects.values():
             if obj.get("zoneId") not in battlefield_zone_ids:
                 continue
@@ -4844,6 +4903,8 @@ def extract_game_plays(
                 continue
             controller = obj.get("controllerSeatId") or obj.get("ownerSeatId")
             if controller != seat or obj.get("isTapped"):
+                continue
+            if mana_source_is_locked(obj, locked_types):
                 continue
             is_land = battlefield_row_for_object(obj) == "lands"
             is_creature = "CardType_Creature" in set(obj.get("cardTypes") or [])

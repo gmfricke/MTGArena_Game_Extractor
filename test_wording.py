@@ -11,6 +11,7 @@ from pathlib import Path
 
 from mtga_extract_games import (
     active_effect_for_resolved_permanent,
+    activated_ability_lock_types,
     apply_authoritative_library_count,
     attached_to_player_summary_parts,
     ability_source_instance_id,
@@ -63,6 +64,7 @@ from mtga_extract_games import (
     mana_restriction_from_ability_texts,
     move_copy_resolves_after_revealed_returns,
     object_pronoun,
+    object_matches_any_card_type,
     ownership_summary_part,
     parse_carddb_int_list,
     phase_section_label,
@@ -1657,6 +1659,30 @@ class WordingTests(unittest.TestCase):
                 ],
             ),
             "Floating mana: 2 G; source tags: 2x 1 G [Snow]",
+        )
+        clarion = {
+            "ability_texts": [
+                "Flying",
+                "Activated abilities of artifacts, creatures, and planeswalkers can't be activated.",
+            ],
+        }
+        self.assertEqual(
+            activated_ability_lock_types(clarion),
+            {"CardType_Artifact", "CardType_Creature", "CardType_Planeswalker"},
+        )
+        self.assertTrue(
+            object_matches_any_card_type(
+                {"cardTypes": ["CardType_Artifact"]},
+                None,
+                activated_ability_lock_types(clarion),
+            )
+        )
+        self.assertFalse(
+            object_matches_any_card_type(
+                {"cardTypes": ["CardType_Land"]},
+                None,
+                activated_ability_lock_types(clarion),
+            )
         )
 
     def test_commander_wording(self):
