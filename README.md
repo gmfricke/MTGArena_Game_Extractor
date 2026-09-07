@@ -66,7 +66,17 @@ If that command is not found, install Python from:
 https://www.python.org/downloads/
 ```
 
-The examples below are for macOS because I wrote the code on a Mac laptop. I'll get around to trying it out on windows. The code should work on Windows too, but the `Player.log` and card database paths will be different.
+On Windows, install Python 3 from python.org or the Microsoft Store, then check it in PowerShell:
+
+```powershell
+python --version
+```
+
+If both `python` and `py` are available, either works:
+
+```powershell
+py --version
+```
 
 Usually you can just run:
 
@@ -74,13 +84,26 @@ Usually you can just run:
 python3 mtga_extract_games.py --last 1
 ```
 
-The program will look in the normal macOS locations for `Player.log` and the newest `Raw_CardDatabase_*.mtga` file. It reads macOS `UTC_Log` archives first when they are available, then `Player-prev.log`, then `Player.log`, and de-duplicates overlapping games by match ID. Parsed games are saved to `./mtga_seen_games.sqlite3` by default, and normal transcript output is selected from that database. If it cannot find the needed paths, it will tell you what paths to set.
+On Windows PowerShell:
+
+```powershell
+python .\mtga_extract_games.py --last 1
+```
+
+The program will look in the normal macOS and Windows locations for `Player.log` and the newest `Raw_CardDatabase_*.mtga` file. It reads macOS `UTC_Log` archives first when they are available, then `Player-prev.log`, then `Player.log`, and de-duplicates overlapping games by match ID. Parsed games are saved to `./mtga_games.sqlite3` by default, and normal transcript output is selected from that database. If it cannot find the needed paths, it will tell you what paths it checked.
 
 You can also set paths yourself on macOS:
 
 ```bash
 LOG="$HOME/Library/Logs/Wizards Of The Coast/MTGA/Player.log"
 CARDDB="$HOME/Library/Application Support/com.wizards.mtga/Downloads/Raw/Raw_CardDatabase_18c90f36843327a3b136b3ec128ed020.mtga"
+```
+
+Or in PowerShell on Windows:
+
+```powershell
+$env:LOG = "$env:USERPROFILE\AppData\LocalLow\Wizards Of The Coast\MTGA\Player.log"
+$env:CARDDB = "$env:ProgramFiles\Wizards of the Coast\MTGA\MTGA_Data\Downloads\Raw\Raw_CardDatabase_....mtga"
 ```
 
 Then run:
@@ -127,6 +150,18 @@ Show the built-in help page:
 python3 mtga_extract_games.py --help
 ```
 
+Show path discovery diagnostics:
+
+```bash
+python3 mtga_extract_games.py --find-paths
+```
+
+On Windows PowerShell:
+
+```powershell
+python .\mtga_extract_games.py --find-paths
+```
+
 ## Finding The Card Database
 
 The Arena card database filename changes when Arena updates. The script tries to find the newest one automatically. If it cannot, look in:
@@ -137,7 +172,24 @@ The Arena card database filename changes when Arena updates. The script tries to
 
 and use the current `Raw_CardDatabase_*.mtga` file.
 
-On Windows, look for the Arena `Player.log` file and the `Downloads/Raw` folder under your MTG Arena install or user data folders. The exact location can change depending on how Arena was installed, but the important files are still:
+On Windows, the script uses `%LOCALAPPDATA%`, `%APPDATA%`, `%USERPROFILE%`, `%ProgramFiles%`, and `%ProgramFiles(x86)%` to build candidate paths. It does not assume a hardcoded username.
+
+Common Windows log locations:
+
+```text
+%USERPROFILE%\AppData\LocalLow\Wizards Of The Coast\MTGA\Player.log
+%USERPROFILE%\AppData\LocalLow\Wizards Of The Coast\MTGA\Player-prev.log
+```
+
+Common Windows card database locations:
+
+```text
+%ProgramFiles%\Wizards of the Coast\MTGA\MTGA_Data\Downloads\Raw\Raw_CardDatabase_*.mtga
+%ProgramFiles(x86)%\Wizards of the Coast\MTGA\MTGA_Data\Downloads\Raw\Raw_CardDatabase_*.mtga
+%LOCALAPPDATA%\Packages\WizardsOfTheCoast.MTGA_8wekyb3d8bbwe\LocalCache\Local\Temp\Wizards Of The Coast\MTGA\Downloads\Raw\Raw_CardDatabase_*.mtga
+```
+
+The exact location can change depending on how Arena was installed, but the important files are still:
 
 ```text
 Player.log
@@ -149,6 +201,20 @@ You can either put those full paths into the command, or set environment variabl
 ```bash
 export LOG="$HOME/Library/Logs/Wizards Of The Coast/MTGA/Player.log"
 export CARDDB="$HOME/Library/Application Support/com.wizards.mtga/Downloads/Raw/Raw_CardDatabase_....mtga"
+```
+
+PowerShell equivalents:
+
+```powershell
+$env:LOG = "$env:USERPROFILE\AppData\LocalLow\Wizards Of The Coast\MTGA\Player.log"
+$env:CARDDB = "$env:ProgramFiles\Wizards of the Coast\MTGA\MTGA_Data\Downloads\Raw\Raw_CardDatabase_....mtga"
+python .\mtga_extract_games.py --last 1
+```
+
+Use `--find-paths` to see the operating system detected, environment variables used, every candidate path examined, whether each path exists, and the selected log/database paths:
+
+```powershell
+python .\mtga_extract_games.py --find-paths
 ```
 
 ## Common Options
@@ -191,7 +257,7 @@ By default, parsed games are saved before output is printed:
 python3 mtga_extract_games.py --all
 ```
 
-The default archive is `./mtga_seen_games.sqlite3` in the current directory. You can choose a different path:
+The default archive is `./mtga_games.sqlite3` in the current directory. You can choose a different path:
 
 ```bash
 python3 mtga_extract_games.py --all --archive-db arena_games.sqlite3
@@ -238,7 +304,7 @@ The most useful options are:
 - `--colour auto`: add ANSI colour escapes only when stdout is a terminal
 - `--colour always`: always add ANSI colour escapes
 - `--color`: older/American spelling alias for `--colour`
-- `--archive-db`: use the default archive path, `./mtga_seen_games.sqlite3`
+- `--archive-db`: use the default archive path, `./mtga_games.sqlite3`
 - `--archive-db PATH`: save parsed games to a SQLite archive at `PATH`
 - `--no-archive-db`: read and print directly from the available logs without updating the archive
 
@@ -264,7 +330,7 @@ Using logs:
   ~/Library/Logs/Wizards Of The Coast/MTGA/Player-prev.log
   ~/Library/Logs/Wizards Of The Coast/MTGA/Player.log
 Using card database: ~/Library/Application Support/com.wizards.mtga/Downloads/Raw/Raw_CardDatabase_e1d409304888cabe6c6012d9ce4c4855.mtga
-Archive refresh: found 118 game(s) in the current logs (0 new, 118 already archived). Archive now contains 122 total game(s) at mtga_seen_games.sqlite3.
+Archive refresh: found 118 game(s) in the current logs (0 new, 118 already archived). Archive now contains 122 total game(s) at mtga_games.sqlite3.
 
 ===== GAME 122: MATCH 469be241-82e0-4347-b105-4fceb6341f56 =====
 Game type: Constructed Brawl (25 starting life)
