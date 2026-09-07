@@ -43,6 +43,7 @@ from mtga_extract_games import (
     death_label_or_none,
     damage_mark_suffix,
     default_archive_db_path,
+    disambiguated_object_label,
     emblem_summary_line,
     engine_keyword_summary,
     effect_power_toughness_modifier,
@@ -352,6 +353,19 @@ class WordingTests(unittest.TestCase):
         objects[17] = {"instanceId": 17, "zoneId": 3}
         reconcile_zone_transfer_objects(objects, [], known_zones)
         self.assertEqual(objects[17]["zoneId"], 9)
+
+    def test_combat_labels_number_identical_objects(self):
+        """Same-name combatants get stable instance-order numbers."""
+        objects = {
+            12: {"zoneId": 4, "controllerSeatId": 2},
+            10: {"zoneId": 4, "controllerSeatId": 2},
+            14: {"zoneId": 4, "controllerSeatId": 1},
+        }
+        labels = {10: "Human", 12: "Human", 14: "Human"}
+
+        self.assertEqual(disambiguated_object_label(10, objects, labels.get), "Human #1")
+        self.assertEqual(disambiguated_object_label(12, objects, labels.get), "Human #2")
+        self.assertEqual(disambiguated_object_label(14, objects, labels.get), "Human")
 
     def test_adjacent_duplicate_transcript_lines_are_combined(self):
         """Check adjacent duplicate transcript lines are combined."""

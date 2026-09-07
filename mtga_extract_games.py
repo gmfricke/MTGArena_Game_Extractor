@@ -2326,6 +2326,24 @@ def reconcile_zone_transfer_objects(
     return known_zones
 
 
+def disambiguated_object_label(instance_id: int, objects: dict, label_for_id) -> str:
+    """Number same-name objects controlled by the same player in one zone."""
+    label = label_for_id(instance_id)
+    obj = objects.get(instance_id) or {}
+    peers = []
+    for peer_id, peer in objects.items():
+        if peer.get("zoneId") != obj.get("zoneId"):
+            continue
+        if peer.get("controllerSeatId") != obj.get("controllerSeatId"):
+            continue
+        if label_for_id(peer_id) == label:
+            peers.append(peer_id)
+    peers.sort()
+    if len(peers) < 2 or instance_id not in peers:
+        return label
+    return f"{label} #{peers.index(instance_id) + 1}"
+
+
 def base_cast_name(cast_text: str) -> str:
     """Strip transcript suffixes so delayed casts can be matched by spell name."""
     return (
@@ -5994,7 +6012,9 @@ def extract_game_plays(
                     if key not in seen_combat:
                         seen_combat.add(key)
                         flush_pending_event_groups()
-                        emit(f"{card_label(iid)} blocks {card_label(attacker_id)}")
+                        blocker = disambiguated_object_label(iid, objects, card_label)
+                        attacker = disambiguated_object_label(attacker_id, objects, card_label)
+                        emit(f"{blocker} blocks {attacker}")
 
     def emit_enters_attacking_events(gsm):
         """Emit zone-transfer effects that put a creature directly into combat."""
