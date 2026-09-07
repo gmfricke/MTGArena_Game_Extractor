@@ -6881,6 +6881,11 @@ def extract_game_plays(
                         for ann in gsm.get("annotations", []):
                             handle_annotation(ann, gsm, msg)
 
+                        # A targetless permanent may have no later annotation
+                        # to trigger its delayed cast line. Once this complete
+                        # update places it on the battlefield, emit it now.
+                        flush_pending_battlefield_permanent_casts()
+
                         finalize_library_debug_for_gsm(gsm)
                         emit_match_results(gsm)
 
