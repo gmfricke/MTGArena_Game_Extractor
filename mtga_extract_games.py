@@ -2344,6 +2344,28 @@ def disambiguated_object_label(instance_id: int, objects: dict, label_for_id) ->
     return f"{label} #{peers.index(instance_id) + 1}"
 
 
+def non_mana_tap_events(annotations: list[dict] | None) -> list[tuple[int, int, bool]]:
+    """Return sourced tap changes, excluding mana and routine combat taps."""
+    annotations = annotations or []
+    mana_sources = {
+        annotation.get("affectorId")
+        for annotation in annotations
+        if "AnnotationType_ManaPaid" in set(annotation.get("type") or [])
+    }
+    events = []
+    for annotation in annotations:
+        if "AnnotationType_TappedUntappedPermanent" not in set(annotation.get("type") or []):
+            continue
+        source_id = annotation.get("affectorId")
+        if source_id is None:
+            continue
+        tapped = bool(annotation_details(annotation.get("details")).get("tapped"))
+        for affected_id in annotation.get("affectedIds") or []:
+            if affected_id not in mana_sources:
+                events.append((source_id, affected_id, tapped))
+    return events
+
+
 def base_cast_name(cast_text: str) -> str:
     """Strip transcript suffixes so delayed casts can be matched by spell name."""
     return (
@@ -6016,6 +6038,20 @@ def extract_game_plays(
                         attacker = disambiguated_object_label(attacker_id, objects, card_label)
                         emit(f"{blocker} blocks {attacker}")
 
+    def emit_tap_effect_events(gsm):
+        """Explain effect-driven tap changes that alter combat availability."""
+        for source_id, affected_id, tapped in non_mana_tap_events(gsm.get("annotations")):
+            source = source_label(source_id)
+            if not source:
+                continue
+            key = (current_match, gsm.get("gameStateId"), "tap", source_id, affected_id, tapped)
+            if key in seen_state_events:
+                continue
+            seen_state_events.add(key)
+            flush_pending_event_groups()
+            verb = "taps" if tapped else "untaps"
+            emit(f"{source} {verb} {card_label(affected_id)}")
+
     def emit_enters_attacking_events(gsm):
         """Emit zone-transfer effects that put a creature directly into combat."""
         if gsm.get("turnInfo", {}).get("phase") != "Phase_Combat":
@@ -6896,6 +6932,7 @@ def extract_game_plays(
                         record_gameplay_event(msg, gsm)
                         emit_continuous_effect_events(gsm)
                         emit_enters_attacking_events(gsm)
+                        emit_tap_effect_events(gsm)
                         emit_combat_events(gsm)
 
                         for ann in gsm.get("annotations", []):

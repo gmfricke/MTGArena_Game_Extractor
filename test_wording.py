@@ -65,6 +65,7 @@ from mtga_extract_games import (
     mana_pool_count,
     mana_restriction_from_ability_texts,
     move_copy_resolves_after_revealed_returns,
+    non_mana_tap_events,
     object_pronoun,
     object_matches_any_card_type,
     ownership_summary_part,
@@ -366,6 +367,31 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(disambiguated_object_label(10, objects, labels.get), "Human #1")
         self.assertEqual(disambiguated_object_label(12, objects, labels.get), "Human #2")
         self.assertEqual(disambiguated_object_label(14, objects, labels.get), "Human")
+
+    def test_non_mana_tap_events_exclude_mana_and_combat_taps(self):
+        """Only sourced effect taps survive mana/combat noise filtering."""
+        annotations = [
+            {
+                "type": ["AnnotationType_TappedUntappedPermanent"],
+                "affectorId": 90,
+                "affectedIds": [20],
+                "details": [{"key": "tapped", "valueInt32": [1]}],
+            },
+            {"type": ["AnnotationType_ManaPaid"], "affectorId": 20, "affectedIds": [99]},
+            {
+                "type": ["AnnotationType_TappedUntappedPermanent"],
+                "affectorId": 91,
+                "affectedIds": [21],
+                "details": [{"key": "tapped", "valueInt32": [1]}],
+            },
+            {
+                "type": ["AnnotationType_TappedUntappedPermanent"],
+                "affectedIds": [22],
+                "details": [{"key": "tapped", "valueInt32": [1]}],
+            },
+        ]
+
+        self.assertEqual(non_mana_tap_events(annotations), [(91, 21, True)])
 
     def test_adjacent_duplicate_transcript_lines_are_combined(self):
         """Check adjacent duplicate transcript lines are combined."""
