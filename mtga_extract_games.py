@@ -10,6 +10,7 @@ easy for humans and other tools to review.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -47,12 +48,79 @@ BASE_CHOICE_VALUE_NAMES = {
 # ability ids in the card database. This fallback covers common keywords if a
 # future database omits or renames the localization rows.
 BASE_KEYWORD_VALUE_NAMES = {
+    1: "deathtouch",
+    2: "defender",
+    3: "double strike",
     6: "first strike",
+    7: "flash",
     8: "flying",
+    9: "haste",
+    10: "hexproof",
     12: "lifelink",
+    13: "reach",
     14: "trample",
     15: "vigilance",
+    21: "protection from",
+    22: "shroud",
+    29: "shadow",
+    38: "fear",
+    91: "infect",
     104: "indestructible",
+    142: "menace",
+    143: "skulk",
+    211: "ward",
+    264: "toxic",
+}
+
+# Keep board snapshots focused on abilities that materially affect casting,
+# attacking, blocking, damage, or interaction. The CARDDB loader below finds
+# their ids dynamically; this set controls which exposed ability records are
+# concise enough to render beside a permanent.
+IMPORTANT_ENGINE_KEYWORDS = {
+    "annihilator",
+    "bushido",
+    "deathtouch",
+    "defender",
+    "double strike",
+    "fear",
+    "first strike",
+    "flash",
+    "flying",
+    "haste",
+    "hexproof",
+    "horsemanship",
+    "indestructible",
+    "infect",
+    "intimidate",
+    "islandwalk",
+    "landwalk",
+    "lifelink",
+    "menace",
+    "mountainwalk",
+    "plainswalk",
+    "protection",
+    "reach",
+    "shadow",
+    "shroud",
+    "skulk",
+    "swampwalk",
+    "toxic",
+    "trample",
+    "vigilance",
+    "ward",
+    "wither",
+}
+
+# These keyword abilities may include a value, cost, quality, or player choice
+# in the localized ability record (for example, "Ward—Pay 2 life" or
+# "Protection from red").
+PARAMETERIZED_ENGINE_KEYWORDS = {
+    "annihilator",
+    "bushido",
+    "hexproof",
+    "protection",
+    "toxic",
+    "ward",
 }
 
 # Observed on Skithiryx, the Blight Dragon. Arena records its combat damage to
@@ -584,7 +652,14 @@ def load_enum_value_names(carddb_path: Path, enum_type: str) -> dict[int, str]:
 
 
 def load_keyword_value_names(carddb_path: Path) -> dict[int, str]:
-    """Load SelectN keyword ids from intrinsic ability localizations in CARDDB."""
+    """Load keyword-like ability ids from localized CARDDB ability records.
+
+    Older databases marked the reusable keyword rows as intrinsic abilities.
+    Current databases no longer do that consistently, but still classify the
+    rows as category 3. Prefer either signal when available so engine-exposed
+    abilities and StaticList_Keywords choices continue to decode across CARDDB
+    versions.
+    """
     con = sqlite3.connect(carddb_path)
     cur = con.cursor()
     cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -593,15 +668,24 @@ def load_keyword_value_names(carddb_path: Path) -> dict[int, str]:
         con.close()
         return dict(BASE_KEYWORD_VALUE_NAMES)
 
+    cur.execute("PRAGMA table_info(Abilities)")
+    ability_columns = {row[1] for row in cur.fetchall()}
+    classifiers = []
+    if "Category" in ability_columns:
+        classifiers.append("a.Category = 3")
+    if "IsIntrinsicAbility" in ability_columns:
+        classifiers.append("a.IsIntrinsicAbility = 1")
+    where_classifier = f"AND ({' OR '.join(classifiers)})" if classifiers else ""
+
     cur.execute(
-        """
+        f"""
         SELECT a.Id, l.Loc
         FROM Abilities a
         JOIN Localizations_enUS l
           ON a.TextId = l.LocId
         WHERE l.Formatted = 1
-          AND a.IsIntrinsicAbility = 1
           AND l.Loc IS NOT NULL
+          {where_classifier}
         """
     )
     mapping = dict(BASE_KEYWORD_VALUE_NAMES)
@@ -1122,7 +1206,10 @@ def resolve_input_paths(
     return player_log, carddb, warning
 
 
-def find_last_game_start(player_log: Path) -> tuple[int, int]:
+def find_last_game_start(
+    player_log: Path,
+    player_names_by_match: dict[str, dict[int, str]] | None = None,
+) -> tuple[int, int]:
     """Return the byte offset and game number for the last match in Player.log."""
     last_start = 0
     game_count = 0
@@ -1140,6 +1227,10 @@ def find_last_game_start(player_log: Path) -> tuple[int, int]:
                 root = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if player_names_by_match is not None:
+                room_match_id, room_player_names = match_room_player_names(root)
+                if room_match_id and room_player_names:
+                    player_names_by_match[room_match_id] = room_player_names
             for msg in root.get("greToClientEvent", {}).get("greToClientMessages", []):
                 gsm = msg.get("gameStateMessage")
                 if not gsm:
@@ -1150,6 +1241,22 @@ def find_last_game_start(player_log: Path) -> tuple[int, int]:
                     game_count += 1
                     last_start = offset
     return last_start, game_count
+
+
+def match_room_player_names(root: dict) -> tuple[str | None, dict[int, str]]:
+    """Extract Arena seat-to-name mappings from a match-room state record."""
+    event = root.get("matchGameRoomStateChangedEvent") or {}
+    room_info = event.get("gameRoomInfo") or {}
+    config = room_info.get("gameRoomConfig") or {}
+    match_id = config.get("matchId")
+    players = config.get("reservedPlayers") or event.get("players") or []
+    names = {}
+    for player in players:
+        seat = player.get("systemSeatId")
+        name = player.get("playerName")
+        if seat in (1, 2) and name:
+            names[seat] = str(name)
+    return match_id, names
 
 
 def subject_pronoun(label: str) -> str:
@@ -1397,7 +1504,7 @@ DEFAULT_CARD_NAME_COLORS = {
     **{name: (COLOURLESS_MANA_COLOR,) for name in COLORLESS_LAND_NAMES},
     **{name: colors for name, colors in MULTICOLOUR_LAND_COLORS.items()},
 }
-ARCHIVE_SCHEMA_VERSION = 2
+ARCHIVE_SCHEMA_VERSION = 3
 LAND_NAME_PATTERN = re.compile(
     r"(?<!\w)("
     + "|".join(
@@ -2448,35 +2555,53 @@ def emblem_summary_line(names: list[str]) -> str | None:
     return f"Emblems: {phrase}" if phrase else None
 
 
+def concise_engine_keyword_labels(
+    ability_name: str | None,
+    important_keywords: set[str] | None = None,
+) -> list[str]:
+    """Extract concise, unconditional keywords from one localized ability.
+
+    CARDDB category 3 also contains complete rules sentences. Only exact
+    keyword labels, combinations of exact labels, and short parameterized
+    keyword labels are safe to attach directly to a permanent. In particular,
+    this avoids claiming that an anthem saying "Creatures you control have
+    flying" itself has flying.
+    """
+    important_keywords = important_keywords or IMPORTANT_ENGINE_KEYWORDS
+    clean_name = clean_localized_enum_name(ability_name)
+    if not clean_name:
+        return []
+    normalized = re.sub(r"\s+", " ", clean_name).strip().rstrip(".").casefold()
+    if normalized in important_keywords:
+        return [normalized]
+
+    # Arena sometimes combines multiple bare keywords in one ability record.
+    parts = [part.strip() for part in re.split(r"\s*(?:,|\band\b)\s*", normalized)]
+    if len(parts) > 1 and all(part in important_keywords for part in parts):
+        return list(dict.fromkeys(parts))
+
+    # Preserve the useful qualifier/cost for compact parameterized keywords,
+    # while rejecting sentences and continuous effects that merely mention one.
+    if len(normalized) <= 80 and not any(mark in normalized for mark in ('"', ";")):
+        for keyword in PARAMETERIZED_ENGINE_KEYWORDS & important_keywords:
+            if re.match(rf"^{re.escape(keyword)}(?:\s+|[—-])", normalized):
+                return [normalized]
+    return []
+
+
 def engine_keyword_summary(
     abilities: list[dict],
     keyword_names: dict[int, str],
     important_keywords: set[str] | None = None,
 ) -> list[str]:
     """Return important engine-exposed keywords from object uniqueAbilities."""
-    important_keywords = important_keywords or {
-        "deathtouch",
-        "double strike",
-        "first strike",
-        "flying",
-        "haste",
-        "hexproof",
-        "indestructible",
-        "lifelink",
-        "menace",
-        "protection",
-        "reach",
-        "trample",
-        "vigilance",
-        "ward",
-    }
+    important_keywords = important_keywords or IMPORTANT_ENGINE_KEYWORDS
     names = []
     for ability in abilities or []:
         name = keyword_names.get(ability.get("grpId"))
-        if not name:
-            continue
-        if any(keyword in name for keyword in important_keywords) and name not in names:
-            names.append(name)
+        for label in concise_engine_keyword_labels(name, important_keywords):
+            if label not in names:
+                names.append(label)
     return names
 
 
@@ -2637,7 +2762,7 @@ def should_infer_missing_cast_before_resolve(
         return False
     if not obj or obj.get("type") != "GameObjectType_Card":
         return False
-    if "CardType_Land" in (obj.get("cardTypes") or []):
+    if set(obj.get("cardTypes") or []) & {"CardType_Land", "CardType_Dungeon"}:
         return False
     if obj.get("isCopy"):
         return False
@@ -2983,6 +3108,38 @@ def format_cast_mana_note(spent_text: str | None, cost_amount: int = 0, availabl
     return f" [spent {spent_text}; remaining {remaining} mana]"
 
 
+def should_carry_cast_marker(
+    source_zone_type: str | None,
+    destination_zone_type: str | None,
+) -> bool:
+    """Keep a cast marker only while the same spell is resolving.
+
+    Arena changes object ids as cards move between zones.  A marker carried to
+    hand, command, graveyard, or exile would make a later cast of that physical
+    card look like a duplicate and suppress it from the transcript.
+    """
+    if (
+        destination_zone_type == "ZoneType_Stack"
+        and source_zone_type not in {"ZoneType_Stack", "ZoneType_Limbo"}
+    ):
+        return False
+    return destination_zone_type in {
+        "ZoneType_Stack",
+        "ZoneType_Limbo",
+        "ZoneType_Battlefield",
+        "ZoneType_Graveyard",
+        "ZoneType_Exile",
+    }
+
+
+def phrase_mana_tap(source: str, actor: str, permanent: str, mana: str) -> str:
+    """Describe a mana ability that taps another permanent as its cost."""
+    return (
+        f"{source} ability: {subject_pronoun(actor)} "
+        f"{present_tense_verb(actor, 'tap', 'taps')} {permanent} for {mana}"
+    )
+
+
 def mana_cost_text_amount(cost_text: str | None) -> int:
     """Return a conservative mana amount from formatted mana text like 2G or WWW."""
     if not cost_text:
@@ -3266,6 +3423,35 @@ def transcript_with_game_header(lines: list[str], number: int, match_id: str) ->
     return [header, *lines]
 
 
+def transcript_has_state_blocks(lines: list[str] | str) -> bool:
+    """Return whether a transcript contains full player board-state snapshots."""
+    text = lines if isinstance(lines, str) else "\n".join(lines)
+    return bool(
+        re.search(
+            r"^(?:My|Opponent's|Player \d+'s) board:$",
+            text,
+            re.MULTILINE,
+        )
+    )
+
+
+def transcript_is_reduced(lines: list[str] | str) -> bool:
+    """Detect action-only output from parsing with turn-state snapshots disabled."""
+    text = lines if isinstance(lines, str) else "\n".join(lines)
+    return not transcript_has_state_blocks(text) and bool(
+        re.search(r"^=== Turn \d+:", text, re.MULTILINE)
+    )
+
+
+def transcript_version_hash(content: str) -> str:
+    """Hash immutable gameplay content without mutable archive display numbering."""
+    lines = content.splitlines()
+    if lines and lines[0].startswith("===== GAME "):
+        lines = lines[1:]
+    normalized = "\n".join(lines)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 def ensure_archive_schema(con) -> None:
     """Create or migrate the SQLite archive schema to the version supported by this program."""
     current_version = con.execute("PRAGMA user_version").fetchone()[0]
@@ -3363,6 +3549,20 @@ def ensure_archive_schema(con) -> None:
         )
     """)
     con.execute("""
+        CREATE TABLE IF NOT EXISTS transcript_versions (
+            id INTEGER PRIMARY KEY,
+            game_id INTEGER NOT NULL,
+            format TEXT NOT NULL DEFAULT 'plain_text',
+            parser_version TEXT,
+            line_count INTEGER NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(game_id, format, content_sha256),
+            FOREIGN KEY(game_id) REFERENCES games(id) ON DELETE CASCADE
+        )
+    """)
+    con.execute("""
         CREATE TABLE IF NOT EXISTS log_sources (
             id INTEGER PRIMARY KEY,
             path TEXT NOT NULL UNIQUE,
@@ -3376,6 +3576,10 @@ def ensure_archive_schema(con) -> None:
     con.execute("CREATE INDEX IF NOT EXISTS games_v2_match_row_id_idx ON games(match_row_id)")
     con.execute("CREATE INDEX IF NOT EXISTS games_v2_archive_index_idx ON games(game_archive_index)")
     con.execute("CREATE INDEX IF NOT EXISTS transcripts_v2_game_id_idx ON transcripts(game_id)")
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS transcript_versions_v3_game_id_idx "
+        "ON transcript_versions(game_id)"
+    )
 
     for (
         match_id,
@@ -3431,6 +3635,52 @@ def ensure_archive_schema(con) -> None:
             VALUES (?, 'plain_text', NULL, ?, ?, ?, ?)
             """,
             (game_id, line_count, transcript, first_seen_at, last_seen_at),
+        )
+    # Seed immutable history from every canonical transcript in older schemas.
+    # INSERT OR IGNORE makes repeated schema checks safe and append-only.
+    for game_id, transcript_format, parser_version, line_count, content, created_at in con.execute(
+        """
+        SELECT game_id, format, parser_version, line_count, content, created_at
+        FROM transcripts
+        ORDER BY id
+        """
+    ):
+        con.execute(
+            """
+            INSERT OR IGNORE INTO transcript_versions (
+                game_id, format, parser_version, line_count,
+                content_sha256, content, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                game_id,
+                transcript_format,
+                parser_version,
+                line_count,
+                transcript_version_hash(content),
+                content,
+                created_at,
+            ),
+        )
+    for table in ("transcripts", "transcript_versions"):
+        con.execute(
+            f"""
+            CREATE TRIGGER IF NOT EXISTS {table}_immutable_update
+            BEFORE UPDATE ON {table}
+            BEGIN
+                SELECT RAISE(ABORT, '{table} records are immutable');
+            END
+            """
+        )
+        con.execute(
+            f"""
+            CREATE TRIGGER IF NOT EXISTS {table}_immutable_delete
+            BEFORE DELETE ON {table}
+            BEGIN
+                SELECT RAISE(ABORT, '{table} records are immutable');
+            END
+            """
         )
     con.execute(f"PRAGMA user_version = {ARCHIVE_SCHEMA_VERSION}")
     con.commit()
@@ -3545,6 +3795,22 @@ def archive_seen_games(
             inserted += 1
 
         lines = cleaned_transcript_lines(match["lines"])
+        if game_id is not None and not transcript_has_state_blocks(lines):
+            existing_transcript = con.execute(
+                """
+                SELECT content
+                FROM transcripts
+                WHERE game_id = ? AND format = 'plain_text'
+                """,
+                (game_id,),
+            ).fetchone()
+            if existing_transcript and transcript_has_state_blocks(existing_transcript[0]):
+                # Presentation flags such as --no-turn-state must never replace
+                # a richer archived replay with a reduced transcript.
+                lines = existing_transcript[0].splitlines()
+        transcript_format = "plain_text_reduced" if transcript_is_reduced(lines) else "plain_text"
+        # Stored rows retain their original header forever. Archive display
+        # numbers are rewritten only in memory when a transcript is read.
         lines = transcript_with_game_header(lines, game_archive_index, match_id)
         game_type = next((line for line in lines if line.startswith("Game type:")), None)
         transcript = "\n".join(lines)
@@ -3578,7 +3844,8 @@ def archive_seen_games(
             {
                 "game_id": game_id,
                 "match_id": match_id,
-                "lines": cleaned_transcript_lines(match["lines"]),
+                "lines": lines,
+                "format": transcript_format,
             }
         )
         con.execute(
@@ -3586,14 +3853,27 @@ def archive_seen_games(
             INSERT INTO transcripts (
                 game_id, format, parser_version, line_count, content
             )
-            VALUES (?, 'plain_text', ?, ?, ?)
-            ON CONFLICT(game_id, format) DO UPDATE SET
-                parser_version=excluded.parser_version,
-                line_count=excluded.line_count,
-                content=excluded.content,
-                updated_at=CURRENT_TIMESTAMP
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(game_id, format) DO NOTHING
             """,
-            (game_id, ARCHIVE_SCHEMA_VERSION, len(lines), transcript),
+            (game_id, transcript_format, ARCHIVE_SCHEMA_VERSION, len(lines), transcript),
+        )
+        con.execute(
+            """
+            INSERT OR IGNORE INTO transcript_versions (
+                game_id, format, parser_version, line_count,
+                content_sha256, content
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                game_id,
+                transcript_format,
+                ARCHIVE_SCHEMA_VERSION,
+                len(lines),
+                transcript_version_hash(transcript),
+                transcript,
+            ),
         )
         con.execute(
             "UPDATE matches SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -3643,17 +3923,6 @@ def archive_seen_games(
                 "UPDATE games SET game_archive_index = ? WHERE id = ?",
                 (final_index, game_id),
             )
-        for row in refreshed_game_rows:
-            final_index = final_index_by_game_id[row["game_id"]]
-            lines = transcript_with_game_header(row["lines"], final_index, row["match_id"])
-            con.execute(
-                """
-                UPDATE transcripts
-                SET line_count = ?, content = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE game_id = ? AND format = 'plain_text'
-                """,
-                (len(lines), "\n".join(lines), row["game_id"]),
-            )
     total = con.execute("SELECT count(*) FROM games").fetchone()[0]
     con.commit()
     con.close()
@@ -3673,18 +3942,48 @@ def archived_transcript_matches(db_path: Path) -> list[dict]:
                 m.archive_index,
                 g.game_index,
                 g.has_result,
-                t.content
+                tv.id,
+                tv.content
             FROM games g
             JOIN matches m ON m.id = g.match_row_id
-            JOIN transcripts t ON t.game_id = g.id AND t.format = 'plain_text'
-            ORDER BY g.game_archive_index
+            JOIN transcript_versions tv
+              ON tv.game_id = g.id AND tv.format = 'plain_text'
+            ORDER BY g.game_archive_index, tv.id
             """
         )
     )
     con.close()
+    best_rows = {}
+    for row in rows:
+        game_archive_index, match_id, match_archive_index, game_index, has_result, version_id, transcript = row
+        score = (
+            1 if transcript_has_state_blocks(transcript) else 0,
+            1 if re.search(r"^(?:Winner|Match winner):", transcript, re.MULTILINE) else 0,
+            version_id,
+        )
+        current = best_rows.get(game_archive_index)
+        if current is None or score > current[0]:
+            best_rows[game_archive_index] = (score, row)
+
     matches = []
-    for game_archive_index, match_id, match_archive_index, game_index, has_result, transcript in rows:
-        lines = transcript.splitlines()
+    for game_archive_index in sorted(best_rows):
+        (
+            _score,
+            (
+                game_archive_index,
+                match_id,
+                match_archive_index,
+                game_index,
+                has_result,
+                _version_id,
+                transcript,
+            ),
+        ) = best_rows[game_archive_index]
+        lines = transcript_with_game_header(
+            transcript.splitlines(),
+            game_archive_index,
+            match_id,
+        )
         if is_placeholder_transcript_lines(lines):
             continue
         matches.append(
@@ -3792,6 +4091,8 @@ def extract_game_plays(
     show_turn_state: bool = True,
     show_phases: bool = True,
     live: bool = False,
+    live_state_only: bool = False,
+    live_state_path: Path | None = None,
     enum_value_names: dict[str, dict[int, str]] | None = None,
     keyword_value_names: dict[int, str] | None = None,
     card_metadata: dict[int, dict] | None = None,
@@ -3805,6 +4106,7 @@ def extract_game_plays(
     annotation_object_zones = {}
     players = {}
     team_to_seats = {}
+    player_names_by_match = {}
     seen_annotations = set()
     seen_combat = set()
     seen_life_changes = set()
@@ -3816,6 +4118,7 @@ def extract_game_plays(
     seen_no_combat_damage = set()
     seen_enters_attacking = set()
     seen_revealed_cards = set()
+    pending_revealed_cards = []
     remembered_object_labels = {}
     stack_display_names = {}
     emitted_cast_instance_ids = set()
@@ -3824,6 +4127,7 @@ def extract_game_plays(
     ability_source_names = {}
     pending_stack_casts = {}
     cast_mana_by_instance = {}
+    seen_mana_paid_annotations = set()
     pending_mill_group = None
     pending_life_groups = {}
     pending_death_events = []
@@ -3864,6 +4168,8 @@ def extract_game_plays(
     current_gsm_library_deltas = Counter()
     current_gsm_library_events = []
     pending_keyword_selects = {}
+    live_state_caught_up = False
+    last_live_state_snapshot = None
 
     debug_counts = Counter()
     debug_samples = {}
@@ -3943,12 +4249,12 @@ def extract_game_plays(
             return
         if current_match_lines and current_match_lines[-1]:
             current_match_lines.append("")
-            if live:
+            if live and not live_state_only:
                 print("", flush=True)
         suffix = " (no events)" if no_events else ""
         heading = f"-- {section}{suffix} --"
         current_match_lines.append(heading)
-        if live:
+        if live and not live_state_only:
             print(
                 colorize_transcript_line(
                     heading,
@@ -4038,7 +4344,7 @@ def extract_game_plays(
                     current_match_lines[-1] = f"{int(duplicate_match.group(1)) + 1}x {line}"
                     return
             current_match_lines.append(line)
-            if live:
+            if live and not live_state_only:
                 print(
                     colorize_transcript_line(
                         line,
@@ -4186,6 +4492,7 @@ def extract_game_plays(
         nonlocal pending_mill_group, current_phase_section, emitted_phase_section
         nonlocal library_snapshot_changes, current_gsm_library_deltas, current_gsm_library_events
         nonlocal pending_keyword_selects
+        nonlocal last_live_state_snapshot
 
         event_index = 0
         current_turn = None
@@ -4224,6 +4531,10 @@ def extract_game_plays(
             seen_no_combat_damage,
             seen_enters_attacking,
             seen_revealed_cards,
+            pending_revealed_cards,
+            seen_mana_paid_annotations,
+            emitted_cast_instance_ids,
+            emitted_cast_line_instance_ids,
             ability_trigger_ids,
             commander_instance_ids,
             commander_cast_counts,
@@ -4236,6 +4547,7 @@ def extract_game_plays(
         library_snapshot_changes = []
         current_gsm_library_deltas = Counter()
         current_gsm_library_events = []
+        last_live_state_snapshot = None
 
     def start_match(match_id, gsm):
         """Initialize transcript and parser state for a new Arena match id."""
@@ -4433,6 +4745,16 @@ def extract_game_plays(
         }
         return labels.get(zone_type, clean_arena_enum(zone_type, "ZoneType_") or "unknown zone")
 
+    def instance_zone_type(instance_id):
+        """Return an object's current zone type, including sparse diff objects."""
+        zone_id = (objects.get(instance_id) or {}).get("zoneId")
+        if zone_id is not None:
+            return zones.get(zone_id, {}).get("type")
+        for zone in zones.values():
+            if instance_id in (zone.get("objectInstanceIds") or []):
+                return zone.get("type")
+        return None
+
     def is_exile_zone(zone_id):
         """Return true when an Arena zone id currently points at exile."""
         return zones.get(zone_id, {}).get("type") == "ZoneType_Exile"
@@ -4560,11 +4882,25 @@ def extract_game_plays(
             pending_stack_casts[new_id] = pending_stack_casts.pop(orig_id)
             if pending_stack_casts[new_id].get("source_id") == orig_id:
                 pending_stack_casts[new_id]["source_id"] = new_id
-        if orig_id in cast_mana_by_instance:
+        source_zone_type = instance_zone_type(orig_id)
+        destination_zone_type = instance_zone_type(new_id)
+        carry_cast_marker = should_carry_cast_marker(
+            source_zone_type,
+            destination_zone_type,
+        )
+        carry_cast_mana = destination_zone_type in {
+            "ZoneType_Stack",
+            "ZoneType_Limbo",
+            "ZoneType_Battlefield",
+        }
+        if orig_id in cast_mana_by_instance and carry_cast_mana:
             # Cast mana is learned from legal action messages before the
             # ZoneTransfer CastSpell event. Carry it across the same id changes
             # as pending stack casts.
             cast_mana_by_instance[new_id] = cast_mana_by_instance.pop(orig_id)
+        elif orig_id in cast_mana_by_instance:
+            cast_mana_by_instance.pop(orig_id, None)
+            cast_mana_by_instance.pop(new_id, None)
         if orig_id in object_counters:
             # Counter annotations are tied to instance ids. Carry them across
             # object id changes so board-state grouping remains accurate.
@@ -4592,13 +4928,17 @@ def extract_game_plays(
             known_targets_by_source[source_id] = [
                 new_id if target_id == orig_id else target_id for target_id in target_ids
             ]
-        if orig_id in emitted_cast_instance_ids:
+        if orig_id in emitted_cast_instance_ids and carry_cast_marker:
             # Arena may change the stack object's instance id between the
             # hidden cast and the resolve. Preserve the emitted-cast marker so
             # the fallback does not narrate the same spell twice.
             emitted_cast_instance_ids.add(new_id)
-        if orig_id in emitted_cast_line_instance_ids:
+        else:
+            emitted_cast_instance_ids.discard(new_id)
+        if orig_id in emitted_cast_line_instance_ids and carry_cast_marker:
             emitted_cast_line_instance_ids.add(new_id)
+        else:
+            emitted_cast_line_instance_ids.discard(new_id)
 
     def card_label(instance_id, fallback_grp_id=None):
         """Return a readable card label for an instance, falling back to grpId."""
@@ -4819,7 +5159,81 @@ def extract_game_plays(
                 "seat": seat,
                 "name": card_label(instance_id),
                 "effect_note": cast_mana_effect_note_from_action(action),
+                "payment_from_action": True,
+                "mana_source_names": [],
             }
+
+    def note_mana_paid(ann):
+        """Recover an opponent's actual payment from ManaPaid annotations."""
+        affected = ann.get("affectedIds") or []
+        if not affected:
+            return
+        details = detail_dict(ann.get("details"))
+        color = details.get("color")
+        symbol = MANA_SYMBOL_LABELS.get(color)
+        if not symbol:
+            return
+        instance_id = affected[0]
+        key = (
+            current_match,
+            ann.get("id"),
+            ann.get("affectorId"),
+            instance_id,
+            color,
+            details.get("id"),
+        )
+        if key in seen_mana_paid_annotations:
+            return
+        seen_mana_paid_annotations.add(key)
+
+        seat = object_controller(instance_id) or object_owner(instance_id)
+        cached = cast_mana_by_instance.setdefault(
+            instance_id,
+            {
+                "spent_text": None,
+                "cost_amount": 0,
+                "available_before": None,
+                "seat": seat,
+                "name": card_label(instance_id),
+                "effect_note": None,
+                "payment_from_action": False,
+                "mana_source_names": [],
+                "paid_symbols": [],
+            },
+        )
+        if not cached.get("payment_from_action"):
+            symbols = cached.setdefault("paid_symbols", [])
+            symbols.append(symbol)
+            counts = Counter(symbols)
+            cached["spent_text"] = "".join(
+                mana_symbol * counts[mana_symbol]
+                for mana_symbol in ("W", "U", "B", "R", "G", "C")
+            )
+            cached["cost_amount"] = len(symbols)
+            remaining = remaining_mana_count(seat)
+            cached["available_before"] = (
+                None if remaining is None else remaining + len(symbols)
+            )
+
+        source_id = ann.get("affectorId")
+        source_obj = objects.get(source_id, {})
+        source_name = source_label(source_id)
+        if (
+            source_name
+            and not card_is_land(source_obj, metadata_for_object(source_obj))
+            and source_name not in cached["mana_source_names"]
+        ):
+            cached["mana_source_names"].append(source_name)
+
+    def cached_cast_effect_note(cached):
+        """Combine payment restrictions with strategically useful mana sources."""
+        notes = []
+        if cached.get("effect_note"):
+            notes.append(cached["effect_note"])
+        source_names = cached.get("mana_source_names") or []
+        if source_names:
+            notes.append(f"mana via {'; '.join(source_names)}")
+        return "; ".join(notes) or None
 
     def cast_mana_suffix(instance_id, seat, spell_name=None):
         """Describe mana spent and estimated remaining mana for one cast action."""
@@ -4857,7 +5271,7 @@ def extract_game_plays(
                         cached.get("cost_amount", 0),
                         int(cached.get("cost_amount") or 0) + remaining,
                     ),
-                    cached.get("effect_note"),
+                    cached_cast_effect_note(cached),
                 )
             return append_cast_mana_effect_note(
                 format_cast_mana_note(
@@ -4865,7 +5279,7 @@ def extract_game_plays(
                     cached.get("cost_amount", 0),
                     cached.get("available_before"),
                 ),
-                cached.get("effect_note"),
+                cached_cast_effect_note(cached),
             )
         cost_text = format_card_mana_cost((metadata or {}).get("mana_cost"))
         if cost_text:
@@ -5671,6 +6085,142 @@ def extract_game_plays(
             lines.append(f"{choice['source']} chose {choice['text']} from an Arena keyword prompt")
         return lines
 
+    def live_state_player_label(seat):
+        """Return a short, stable player label for LLM-oriented snapshots."""
+        owner = owner_label(seat)
+        if owner == "Opponent":
+            opponent_name = player_names_by_match.get(current_match, {}).get(seat)
+            if opponent_name:
+                return f"OPP({opponent_name})"
+        return {
+            "Me": "ME",
+            "Opponent": "OPP",
+            "Player 1": "P1",
+            "Player 2": "P2",
+        }.get(owner, f"P{seat}")
+
+    def live_state_named_opponent_text(text):
+        """Add the known opponent name to narrative text inside a state block."""
+        if known_local_seat not in (1, 2):
+            return text
+        opponent_seat = 1 if known_local_seat == 2 else 2
+        opponent_name = player_names_by_match.get(current_match, {}).get(opponent_seat)
+        if not opponent_name:
+            return text
+        return text.replace("Opponent", f"Opponent ({opponent_name})")
+
+    def live_state_names(names):
+        """Render a compact collection while making an empty zone explicit."""
+        value = compact_names(names)
+        return "-" if value == "(empty)" else value
+
+    def live_state_board_value(row):
+        """Render the tapped and untapped halves of one battlefield row."""
+        parts = []
+        if row["untapped"]:
+            parts.append(f"u={{{live_state_names(row['untapped'])}}}")
+        if row["tapped"]:
+            parts.append(f"t={{{live_state_names(row['tapped'])}}}")
+        return ",".join(parts) or "-"
+
+    def build_live_state_snapshot():
+        """Build a compact, self-contained current-state block for LLM ingestion."""
+        if current_match is None:
+            return ()
+
+        active_seat = current_turn_info.get("activePlayer")
+        decision_seat = current_turn_info.get("decisionPlayer")
+        phase = current_phase_section or phase_section_label(current_turn_info) or "setup"
+        phase_key = re.sub(r"[^a-z0-9]+", "_", phase.lower()).strip("_")
+        turn_value = current_turn if current_turn is not None else 0
+        lines = [
+            (
+                f"STATE game={current_match_number} turn={turn_value} phase={phase_key} "
+                f"active={live_state_player_label(active_seat) if active_seat else '-'} "
+                f"priority={live_state_player_label(decision_seat) if decision_seat else '-'}"
+            )
+        ]
+
+        for seat in turn_state_seat_order():
+            label = live_state_player_label(seat)
+            player = players.get(seat, {})
+            life = player.get("lifeTotal", "?")
+            hand = hand_names(seat)
+            lines.append(
+                f"{label} life={life} hand={len(hand)} {{{live_state_names(hand)}}}"
+            )
+
+            rows = battlefield_rows(seat)
+            lines.append(
+                f"{label} board "
+                f"land[{live_state_board_value(rows['lands'])}] "
+                f"noncreature[{live_state_board_value(rows['artifacts_enchantments'])}] "
+                f"creature[{live_state_board_value(rows['creatures'])}] "
+                f"other[{live_state_board_value(rows['other'])}]"
+            )
+
+            mana_parts = []
+            floating = format_mana_pool(player.get("manaPool"))
+            available = available_mana_line(seat)
+            if floating:
+                mana_parts.append(floating.removeprefix("Floating mana: "))
+            if available:
+                mana_parts.append(available.removeprefix("Available mana: "))
+            lines.append(f"{label} mana={' | '.join(mana_parts) if mana_parts else '-'}")
+
+            lines.append(
+                f"{label} zones library={library_count(seat) if library_count(seat) is not None else '?'} "
+                f"command={{{live_state_names(command_zone_names(seat))}}} "
+                f"graveyard={{{live_state_names(zone_names('ZoneType_Graveyard', seat))}}} "
+                f"exile={{{live_state_names(zone_names('ZoneType_Exile', seat))}}}"
+            )
+
+            attachment_parts = attached_to_player_summary_parts(attachments_for_player(seat))
+            emblem = emblem_summary_line(emblems_for_player(seat))
+            if emblem:
+                attachment_parts.append(emblem)
+            if attachment_parts:
+                lines.append(f"{label} attached={{{'; '.join(attachment_parts)}}}")
+
+            resources = available_resources_for_seat(seat)
+            resource_cards = resources.get("potential_graveyard_exile_plays") or []
+            if resource_cards:
+                lines.append(f"{label} resources={{{'; '.join(resource_cards)}}}")
+
+        stack = zone_names("ZoneType_Stack")
+        if stack:
+            lines.append(f"STACK {{{live_state_names(stack)}}}")
+        if active_effects:
+            effects = sorted(effect["text"] for effect in active_effects.values())
+            lines.append(f"EFFECTS {{{'; '.join(effects)}}}")
+        strategy = strategic_state_lines()
+        if strategy:
+            named_strategy = [live_state_named_opponent_text(line) for line in strategy]
+            lines.append(f"NOTES {{{'; '.join(named_strategy)}}}")
+        lines.append("END_STATE")
+        return tuple(lines)
+
+    def print_live_state_snapshot(force=False):
+        """Print one changed state block after the initial live catch-up."""
+        nonlocal last_live_state_snapshot
+        if not live_state_only or not live_state_caught_up:
+            return
+        snapshot = build_live_state_snapshot()
+        if not snapshot or (not force and snapshot == last_live_state_snapshot):
+            return
+        rendered = "\n".join(snapshot) + "\n"
+        if live_state_path is not None:
+            destination = live_state_path.expanduser()
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_name(f".{destination.name}.tmp")
+            temporary.write_text(rendered, encoding="utf-8")
+            temporary.replace(destination)
+        else:
+            if last_live_state_snapshot is not None:
+                print(flush=True)
+            print(rendered, end="", flush=True)
+        last_live_state_snapshot = snapshot
+
     def flush_pending_stack_cast(instance_id, section_override=None):
         """Emit a delayed speculative cast once Arena confirms it mattered."""
         pending = pending_stack_casts.pop(instance_id, None)
@@ -5896,8 +6446,30 @@ def extract_game_plays(
             emit(phrase_grouped_deaths(event["controller"], event["name"], grouped[key]))
         pending_death_events = []
 
+    def flush_pending_revealed_cards():
+        """Emit reveals that were not merely the public prelude to a cast."""
+        if not pending_revealed_cards:
+            return
+        events = list(pending_revealed_cards)
+        pending_revealed_cards.clear()
+        for event in events:
+            emit_in_phase_section(
+                phrase_player_action(event["owner"], "reveal", event["name"]),
+                event.get("section"),
+            )
+
+    def suppress_matching_pending_reveal(owner, name):
+        """Drop Arena's synthetic reveal when that same card is immediately cast."""
+        for index in range(len(pending_revealed_cards) - 1, -1, -1):
+            event = pending_revealed_cards[index]
+            if event["owner"] == owner and event["name"] == name:
+                pending_revealed_cards.pop(index)
+                return True
+        return False
+
     def flush_pending_event_groups():
         """Flush grouped event summaries before emitting an unrelated event."""
+        flush_pending_revealed_cards()
         flush_pending_mill_group()
         flush_pending_life_group()
         flush_pending_death_group()
@@ -5959,6 +6531,12 @@ def extract_game_plays(
         name = preferred_zone_transfer_name(detail_name, card_label(iid))
         from_command = is_command_zone(details.get("zone_src"))
 
+        # Returning a known opponent card to a hidden hand creates a synthetic
+        # RevealedCard object.  The Return line already explains that movement;
+        # do not narrate the visibility bookkeeping as a separate reveal.
+        if category == "Return":
+            suppress_matching_pending_reveal(owner, name)
+
         if category not in {"CastSpell", "Resolve", "Copy"} and iid in pending_stack_casts:
             flush_pending_event_groups()
             update_pending_stack_cast_name(iid, name)
@@ -5973,7 +6551,6 @@ def extract_game_plays(
             actor = owner_label(object_controller(iid)) if object_controller(iid) else owner
             emit(phrase_player_action(actor, "play", name))
         elif category == "CastSpell":
-            flush_pending_event_groups()
             pending_stack_casts.pop(iid, None)
             stack_display_names[iid] = name
             if iid in emitted_cast_instance_ids:
@@ -5989,6 +6566,8 @@ def extract_game_plays(
             # necessarily the owner of the source zone or card.
             caster_seat = object_controller(iid)
             owner = owner_label(caster_seat) if caster_seat else owner
+            suppress_matching_pending_reveal(owner, name)
+            flush_pending_event_groups()
             if is_low_fidelity_update_without_turn(gsm) or cast_text == cast_base_text:
                 # TargetSpec annotations can arrive just after CastSpell in
                 # the same stack sequence. Delay targetless cast lines until
@@ -6704,7 +7283,7 @@ def extract_game_plays(
         emit(phrase_shuffle(source_label(ann.get("affectorId")), owner_label(seat)))
 
     def emit_revealed_card(ann, gsm):
-        """Emit newly revealed cards once, while ignoring later reveal cleanup."""
+        """Delay reveals so a following cast can replace Arena's synthetic reveal."""
         affected = ann.get("affectedIds") or []
         if not affected:
             return
@@ -6719,8 +7298,13 @@ def extract_game_plays(
         if key in seen_revealed_cards:
             return
         seen_revealed_cards.add(key)
-        flush_pending_event_groups()
-        emit(phrase_player_action(owner_label(seat), "reveal", name))
+        pending_revealed_cards.append(
+            {
+                "owner": owner_label(seat),
+                "name": name,
+                "section": current_phase_section,
+            }
+        )
 
     def emit_attachment_created(ann, gsm):
         """Emit newly created attachments such as Auras and Equipment."""
@@ -6736,6 +7320,44 @@ def extract_game_plays(
         seen_state_events.add(key)
         flush_pending_event_groups()
         emit(f"{attachment} becomes attached to {target}")
+
+    def emit_mana_tap(ann, gsm):
+        """Show mana abilities that tap a different permanent as their cost."""
+        details = detail_dict(ann.get("details"))
+        if details.get("tapped") != 1:
+            return
+        affected = ann.get("affectedIds") or []
+        if not affected:
+            return
+        ability_obj = objects.get(ann.get("affectorId"), {})
+        ability_grp_id = ability_obj.get("grpId")
+        ability_text = (ability_texts.get(ability_grp_id) or "").casefold()
+        if "tap an untapped" not in ability_text or "add one mana" not in ability_text:
+            return
+        source_id = ability_source_instance_id(ability_obj)
+        permanent_id = affected[0]
+        if source_id is None or source_id == permanent_id:
+            return
+        seat = object_controller(permanent_id) or object_owner(permanent_id)
+        mana_counts = Counter()
+        for entry in players.get(seat, {}).get("manaPool") or []:
+            if entry.get("srcInstanceId") != source_id:
+                continue
+            if entry.get("abilityGrpId") not in {None, ability_grp_id}:
+                continue
+            value = mana_value_from_color(entry.get("color"))
+            if value:
+                mana_counts[value] += mana_amount_from_pool_entry(entry)
+        mana = "".join(
+            MANA_SYMBOL_LABELS[value] * mana_counts[value]
+            for value in (1, 2, 3, 4, 5, 6)
+            if mana_counts[value]
+        )
+        source = source_label(source_id)
+        if not source or not mana:
+            return
+        flush_pending_event_groups()
+        emit(phrase_mana_tap(source, owner_label(seat), card_label(permanent_id), mana))
 
     def emit_controller_changed(ann, gsm):
         """Emit control changes using the new controller from the current state."""
@@ -6996,6 +7618,8 @@ def extract_game_plays(
             emit_revealed_card(ann, gsm)
         elif "AnnotationType_AttachmentCreated" in ann_types:
             emit_attachment_created(ann, gsm)
+        elif "AnnotationType_TappedUntappedPermanent" in ann_types:
+            emit_mana_tap(ann, gsm)
         elif "AnnotationType_ControllerChanged" in ann_types:
             emit_controller_changed(ann, gsm)
         elif "AnnotationType_ReplacementEffectApplied" in ann_types:
@@ -7209,7 +7833,10 @@ def extract_game_plays(
                 if live:
                     # Live mode starts with the current game, meaning the last match
                     # Arena has started in Player.log, then behaves like tail -f.
-                    live_start, live_game_number = find_last_game_start(player_log)
+                    live_start, live_game_number = find_last_game_start(
+                        player_log,
+                        player_names_by_match,
+                    )
                     f.seek(live_start)
                     read_bytes = live_start
                     current_match_number = max(0, live_game_number - 1)
@@ -7218,6 +7845,9 @@ def extract_game_plays(
                     raw_line = f.readline()
                     if not raw_line:
                         if live:
+                            if live_state_only and not live_state_caught_up:
+                                live_state_caught_up = True
+                                print_live_state_snapshot(force=True)
                             time.sleep(0.25)
                             continue
                         break
@@ -7233,6 +7863,10 @@ def extract_game_plays(
                     root = parse_json_root_from_line(line, f)
                     if root is None:
                         continue
+
+                    room_match_id, room_player_names = match_room_player_names(root)
+                    if room_match_id and room_player_names:
+                        player_names_by_match[room_match_id] = room_player_names
 
                     for msg in root.get("greToClientEvent", {}).get("greToClientMessages", []):
                         gsm = msg.get("gameStateMessage")
@@ -7313,6 +7947,13 @@ def extract_game_plays(
                         emit_tap_effect_events(gsm)
                         emit_combat_events(gsm)
 
+                        # ManaPaid follows CastSpell in Arena's annotation list.
+                        # Cache it first so even immediately emitted cast lines
+                        # can show an opponent's actual reduced payment/source.
+                        for ann in gsm.get("annotations", []):
+                            if "AnnotationType_ManaPaid" in set(ann.get("type") or []):
+                                note_mana_paid(ann)
+
                         for ann in gsm.get("annotations", []):
                             handle_annotation(ann, gsm, msg)
 
@@ -7327,6 +7968,7 @@ def extract_game_plays(
                     if not root.get("greToClientEvent"):
                         emit_keyword_select_response(root)
                         mark_postgame_payload(root)
+                    print_live_state_snapshot()
     except KeyboardInterrupt:
         if not live:
             raise
@@ -7622,6 +8264,9 @@ def main() -> None:
   Watch for new games as Arena writes Player.log:
     python3 mtga_extract_games.py --live
 
+  Watch only compact, changed current-state snapshots for an LLM:
+    python3 mtga_extract_games.py --live-state
+
   Highlight my lines and opponent lines in a terminal:
     python3 mtga_extract_games.py --last 1 --colour always
 
@@ -7796,12 +8441,30 @@ No pip install step is required; this script only uses Python's standard library
         action="store_true",
         help="hide phase/step headings in the transcript",
     )
-    parser.add_argument(
+    live_group = parser.add_mutually_exclusive_group()
+    live_group.add_argument(
         "--live",
         action="store_true",
         help=(
             "print the current game from its start, watch Player.log for new lines, "
             "and archive completed games"
+        ),
+    )
+    live_group.add_argument(
+        "--live-state",
+        action="store_true",
+        help=(
+            "silently catch up to the current game, then print only compact, "
+            "deduplicated state snapshots for LLM ingestion"
+        ),
+    )
+    parser.add_argument(
+        "--live-state-file",
+        type=Path,
+        metavar="PATH",
+        help=(
+            "follow the current game and atomically overwrite PATH with only the "
+            "newest compact state snapshot"
         ),
     )
     parser.add_argument(
@@ -7857,16 +8520,21 @@ No pip install step is required; this script only uses Python's standard library
             parser.error("--range values must be 1 or greater")
         if range_start > range_end:
             parser.error("--range X Y requires X to be less than or equal to Y")
-    if args.live:
+    live_state_mode = args.live_state or args.live_state_file is not None
+    if args.live and args.live_state_file is not None:
+        parser.error("--live cannot be combined with --live-state-file")
+    live_mode = args.live or live_state_mode
+    if live_mode:
+        live_option = "--live-state-file" if args.live_state_file else "--live-state" if args.live_state else "--live"
         if has_live_selection_conflict(args):
-            parser.error("--live cannot be combined with game selection options")
+            parser.error(f"{live_option} cannot be combined with game selection options")
         if is_numeric_cli_token(args.player_log) or is_numeric_cli_token(args.carddb):
             parser.error(
-                "--live does not take a game number. Use --live to follow the current game, "
+                f"{live_option} does not take a game number. Use {live_option} to follow the current game, "
                 "or --last 1 to print the most recent completed game."
             )
         if args.progress:
-            parser.error("--live cannot be combined with --progress")
+            parser.error(f"{live_option} cannot be combined with --progress")
     if args.no_archive_db:
         args.archive_db = None
 
@@ -7899,7 +8567,7 @@ No pip install step is required; this script only uses Python's standard library
         player_log, carddb, path_warning = resolve_input_paths(
             args.player_log,
             args.carddb,
-            live=args.live,
+            live=live_mode,
         )
     except FileNotFoundError as exc:
         parser.exit(2, f"{exc}\n")
@@ -7952,11 +8620,13 @@ No pip install step is required; this script only uses Python's standard library
         first_games=args.first,
         nth_from_end=args.nth_from_end,
         game_range=tuple(args.range) if args.range is not None else None,
-        show_progress=False if args.live else True if args.progress else False if args.no_progress else None,
+        show_progress=False if live_mode else True if args.progress else False if args.no_progress else None,
         show_resolves=args.show_resolves,
         show_turn_state=not args.no_turn_state,
         show_phases=not args.no_phases,
-        live=args.live,
+        live=live_mode,
+        live_state_only=live_state_mode,
+        live_state_path=args.live_state_file,
         enum_value_names=enum_value_names,
         keyword_value_names=keyword_value_names,
         card_metadata=card_metadata,

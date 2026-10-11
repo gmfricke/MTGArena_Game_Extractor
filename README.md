@@ -144,6 +144,22 @@ python3 mtga_extract_games.py --live
 
 Live mode records each completed game to the archive as soon as Arena writes a final game result. If you stop live mode before the current game finishes, it prints a warning that the unfinished game was not recorded in the database.
 
+For fast AI coaching, print only the current state instead of replaying the action transcript:
+
+```bash
+python3 mtga_extract_games.py --live-state
+```
+
+`--live-state` parses the current game silently, prints one compact state block when it catches up, and then prints another block only when the rendered state changes. Each block uses stable `STATE`, `ME`, `OPP`, `STACK`, `EFFECTS`, `NOTES`, and `END_STATE` records so an LLM can ingest it without the earlier action backlog.
+
+For a polling integration that must never ingest queued snapshots, keep only the newest state in a file:
+
+```bash
+python3 mtga_extract_games.py --live-state-file .mtga_latest_state.txt
+```
+
+The file is replaced atomically whenever state changes, so every read returns one complete latest snapshot rather than everything that happened since the previous read.
+
 Show the built-in help page:
 
 ```bash
@@ -263,7 +279,7 @@ The default archive is `./mtga_games.sqlite3` in the current directory. You can 
 python3 mtga_extract_games.py --all --archive-db arena_games.sqlite3
 ```
 
-The archive keeps stable match identity, game ordering, and transcript text separately. The `matches` table is keyed by Arena match ID, `games` stores one row per game within a match, `transcripts` stores generated plain-text output, and `log_sources` records the log files seen during refreshes. This keeps the database usable for best-of-one and best-of-three matches, and leaves room for future transcript formats or metadata.
+The archive keeps stable match identity, game ordering, and transcript text separately. The `matches` table is keyed by Arena match ID, `games` stores one row per game within a match, `transcripts` retains the first generated output, `transcript_versions` stores every distinct later rendering as an immutable append-only version, and `log_sources` records the log files seen during refreshes. Existing transcript records are never overwritten or deleted. Reads select the newest highest-fidelity full version, while reduced `--no-turn-state` output is stored separately and cannot displace a full replay.
 
 For one-off raw-log debugging without updating or reading from the archive:
 

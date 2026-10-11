@@ -5,6 +5,8 @@ mtga_all_games.txt
 *.log
 mtga_games.sqlite3
 mtga_games.sqlite3-*
+mtga_games.sqlite3.bak-*
 mtga_games_pc.sqlite3
 mtga_seen_games.sqlite3
 mtga_seen_games.sqlite3-*
+.mtga_latest_state.txt

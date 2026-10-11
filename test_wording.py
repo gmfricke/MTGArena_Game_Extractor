@@ -1,10 +1,13 @@
 import unittest
+import io
+import json
 import os
 import sqlite3
 import subprocess
 import sys
 import tempfile
 from argparse import Namespace
+from contextlib import redirect_stdout
 from unittest.mock import patch
 from collections import Counter
 from pathlib import Path
@@ -33,6 +36,7 @@ from mtga_extract_games import (
     card_is_nonland_permanent,
     colorize_transcript_line,
     clean_localized_enum_name,
+    concise_engine_keyword_labels,
     combine_adjacent_attack_lines,
     combine_duplicate_transcript_lines,
     combine_repeated_damage_life_sequences,
@@ -48,6 +52,7 @@ from mtga_extract_games import (
     disambiguated_object_label,
     emblem_summary_line,
     engine_keyword_summary,
+    extract_game_plays,
     effect_power_toughness_modifier,
     find_card_database,
     is_hidden_arena_object,
@@ -68,6 +73,7 @@ from mtga_extract_games import (
     mana_pool_count,
     mana_restriction_from_ability_texts,
     mana_spec_types_from_option,
+    match_room_player_names,
     move_copy_resolves_after_revealed_returns,
     non_mana_tap_events,
     object_pronoun,
@@ -93,6 +99,7 @@ from mtga_extract_games import (
     phrase_keyword_choice_value,
     phrase_keyword_choice_values,
     phrase_mulligan,
+    phrase_mana_tap,
     phrase_power_toughness_mod,
     phrase_move_to_zone,
     phrase_mill_summary,
@@ -134,6 +141,7 @@ from mtga_extract_games import (
     should_group_life_change_source,
     is_low_fidelity_update_without_turn,
     should_infer_missing_cast_before_resolve,
+    should_carry_cast_marker,
     should_emit_resolve_line,
     state_player_heading,
     state_player_label,
@@ -638,6 +646,118 @@ class WordingTests(unittest.TestCase):
         args.all = True
         self.assertTrue(has_live_selection_conflict(args))
 
+    def test_live_state_prints_one_compact_snapshot_after_catch_up(self):
+        """Check state-only live mode suppresses narration and emits a bounded snapshot."""
+        root = {
+            "greToClientEvent": {
+                "greToClientMessages": [
+                    {
+                        "gameStateMessage": {
+                            "gameStateId": 1,
+                            "gameInfo": {"matchID": "test-match"},
+                            "turnInfo": {
+                                "turnNumber": 3,
+                                "phase": "Phase_Main1",
+                                "activePlayer": 1,
+                                "decisionPlayer": 1,
+                            },
+                            "players": [
+                                {"systemSeatNumber": 1, "lifeTotal": 20},
+                                {"systemSeatNumber": 2, "lifeTotal": 17},
+                            ],
+                            "zones": [
+                                {
+                                    "zoneId": 10,
+                                    "type": "ZoneType_Hand",
+                                    "ownerSeatId": 1,
+                                    "objectInstanceIds": [100],
+                                },
+                                {
+                                    "zoneId": 11,
+                                    "type": "ZoneType_Battlefield",
+                                    "objectInstanceIds": [101],
+                                },
+                                {
+                                    "zoneId": 12,
+                                    "type": "ZoneType_Library",
+                                    "ownerSeatId": 1,
+                                    "objectInstanceIds": [201, 202],
+                                },
+                                {
+                                    "zoneId": 13,
+                                    "type": "ZoneType_Library",
+                                    "ownerSeatId": 2,
+                                    "objectInstanceIds": [301],
+                                },
+                            ],
+                            "gameObjects": [
+                                {
+                                    "instanceId": 100,
+                                    "grpId": 1,
+                                    "zoneId": 10,
+                                    "ownerSeatId": 1,
+                                    "controllerSeatId": 1,
+                                    "type": "GameObjectType_Card",
+                                },
+                                {
+                                    "instanceId": 101,
+                                    "grpId": 2,
+                                    "zoneId": 11,
+                                    "ownerSeatId": 1,
+                                    "controllerSeatId": 1,
+                                    "cardTypes": ["CardType_Land"],
+                                    "type": "GameObjectType_Card",
+                                },
+                            ],
+                        }
+                    }
+                ]
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "Player.log"
+            log_path.write_text(json.dumps(root) + "\n", encoding="utf-8")
+            output = io.StringIO()
+            with patch("mtga_extract_games.time.sleep", side_effect=KeyboardInterrupt):
+                with redirect_stdout(output):
+                    extract_game_plays(
+                        log_path,
+                        {1: "Opt", 2: "Island"},
+                        live=True,
+                        live_state_only=True,
+                        show_progress=False,
+                    )
+
+        rendered = output.getvalue()
+        self.assertTrue(rendered.startswith("STATE game=1 turn=3 phase=pre_combat_main"))
+        self.assertIn("ME life=20 hand=1 {Opt}", rendered)
+        self.assertIn("land[u={Island}]", rendered)
+        self.assertIn("OPP life=17", rendered)
+        self.assertEqual(rendered.count("END_STATE"), 1)
+        self.assertNotIn("===== GAME", rendered)
+        self.assertNotIn("=== Turn", rendered)
+
+    def test_match_room_player_names(self):
+        """Check match-room records expose stable opponent labels by seat."""
+        root = {
+            "matchGameRoomStateChangedEvent": {
+                "gameRoomInfo": {
+                    "gameRoomConfig": {
+                        "matchId": "match-names",
+                        "reservedPlayers": [
+                            {"systemSeatId": 1, "playerName": "MeName"},
+                            {"systemSeatId": 2, "playerName": "OpponentName"},
+                        ],
+                    }
+                }
+            }
+        }
+
+        self.assertEqual(
+            match_room_player_names(root),
+            ("match-names", {1: "MeName", 2: "OpponentName"}),
+        )
+
     def test_game_type_formatting(self):
         """Check game type formatting."""
         brawl_info = {
@@ -778,7 +898,7 @@ class WordingTests(unittest.TestCase):
             game_count = con.execute("SELECT count(*) FROM games").fetchone()[0]
             con.close()
 
-            self.assertEqual(schema_version, 2)
+            self.assertEqual(schema_version, 3)
             self.assertEqual(source_count, 1)
             self.assertEqual(match_count, 1)
             self.assertEqual(game_count, 1)
@@ -797,6 +917,91 @@ class WordingTests(unittest.TestCase):
             self.assertEqual(archived[0]["match_number"], 1)
             self.assertEqual(archived[0]["game_index"], 1)
             self.assertIn("I attack Opponent with A and B", archived[0]["lines"])
+
+    def test_archive_does_not_replace_full_state_with_reduced_transcript(self):
+        """Check presentation flags cannot downgrade an archived full replay."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "seen.sqlite3"
+            full = {
+                "number": 1,
+                "match_id": "match-full",
+                "lines": [
+                    "===== GAME 1: MATCH match-full =====",
+                    "=== Turn 1: Me ===",
+                    "My hand: Plains",
+                    "My board:",
+                    "  Lands: Untapped: Plains",
+                    "Winner: Me",
+                ],
+                "has_result": True,
+            }
+            reduced = {
+                **full,
+                "lines": [
+                    "===== GAME 1: MATCH match-full =====",
+                    "=== Turn 1: Me ===",
+                    "I play Plains",
+                    "Winner: Me",
+                ],
+            }
+
+            archive_seen_games(db_path, [full])
+            archive_seen_games(db_path, [reduced])
+            archived = archived_transcript_matches(db_path)[0]["lines"]
+
+            self.assertIn("My board:", archived)
+            self.assertNotIn("I play Plains", archived)
+
+    def test_archive_appends_changed_transcript_as_immutable_version(self):
+        """Check refreshed parser output creates history without overwriting its first row."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "seen.sqlite3"
+            original = {
+                "number": 1,
+                "match_id": "match-versioned",
+                "lines": [
+                    "===== GAME 1: MATCH match-versioned =====",
+                    "=== Turn 1: Me ===",
+                    "My board:",
+                    "  Lands: Untapped: Plains",
+                    "Winner: Me",
+                ],
+                "has_result": True,
+            }
+            improved = {
+                **original,
+                "lines": [*original["lines"][:-1], "Current State:", "  1 energy", "Winner: Me"],
+            }
+
+            archive_seen_games(db_path, [original])
+            con = sqlite3.connect(db_path)
+            first_row = con.execute(
+                "SELECT id, content, updated_at FROM transcripts"
+            ).fetchone()
+            con.close()
+
+            archive_seen_games(db_path, [improved])
+            con = sqlite3.connect(db_path)
+            after_row = con.execute(
+                "SELECT id, content, updated_at FROM transcripts"
+            ).fetchone()
+            version_count = con.execute(
+                "SELECT count(*) FROM transcript_versions"
+            ).fetchone()[0]
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "records are immutable"):
+                con.execute("UPDATE transcripts SET content = 'damaged'")
+            con.rollback()
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "records are immutable"):
+                con.execute("DELETE FROM transcript_versions")
+            con.rollback()
+            con.close()
+
+            self.assertEqual(after_row, first_row)
+            self.assertEqual(version_count, 2)
+            self.assertIn(
+                "1 energy",
+                "\n".join(archived_transcript_matches(db_path)[0]["lines"]),
+            )
 
     def test_archive_can_store_multiple_games_for_one_match(self):
         """Check archive can store multiple games for one match."""
@@ -1049,10 +1254,14 @@ class WordingTests(unittest.TestCase):
             self.assertIn("games_legacy_v0", tables)
             self.assertIn("matches", tables)
             self.assertIn("games", tables)
-            self.assertEqual(con.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(con.execute("PRAGMA user_version").fetchone()[0], 3)
             self.assertEqual(con.execute("SELECT count(*) FROM matches").fetchone()[0], 1)
             self.assertEqual(con.execute("SELECT count(*) FROM games").fetchone()[0], 1)
             self.assertEqual(con.execute("SELECT count(*) FROM transcripts").fetchone()[0], 1)
+            self.assertEqual(
+                con.execute("SELECT count(*) FROM transcript_versions").fetchone()[0],
+                1,
+            )
             con.close()
 
     def test_path_resolution_uses_environment_paths(self):
@@ -1554,6 +1763,32 @@ class WordingTests(unittest.TestCase):
             self.assertEqual(names[12], "lifelink")
             self.assertNotEqual(names.get(200), "not a keyword")
 
+    def test_keyword_loader_uses_category_when_intrinsic_flags_are_stale(self):
+        """Check current CARDDB category rows work when intrinsic flags are false."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            carddb = Path(tmpdir) / "carddb.mtga"
+            con = sqlite3.connect(carddb)
+            cur = con.cursor()
+            cur.execute(
+                "CREATE TABLE Abilities("
+                "Id INT, TextId INT, IsIntrinsicAbility INT, Category INT)"
+            )
+            cur.execute("CREATE TABLE Localizations_enUS(LocId INT, Formatted INT, Loc TEXT)")
+            cur.executemany(
+                "INSERT INTO Abilities VALUES (?, ?, ?, ?)",
+                [(13, 100, 0, 3), (500, 101, 0, 7)],
+            )
+            cur.executemany(
+                "INSERT INTO Localizations_enUS VALUES (?, ?, ?)",
+                [(100, 1, "Reach"), (101, 1, "Not an ability")],
+            )
+            con.commit()
+            con.close()
+
+            names = load_keyword_value_names(carddb)
+            self.assertEqual(names[13], "reach")
+            self.assertNotIn(500, names)
+
     def test_card_metadata_loader_reads_types_and_resource_mechanics(self):
         """Check card metadata loader reads types and resource mechanics."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1781,6 +2016,20 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(mana_sources_from_option(halfling_option), [743])
         self.assertIn("ManaSpecType_CantBeCountered", mana_spec_types_from_option(halfling_option))
         self.assertNotIn("ManaSpecType_CantBeCountered", mana_spec_types_from_option({"mana": []}))
+        self.assertTrue(should_carry_cast_marker("ZoneType_Stack", "ZoneType_Battlefield"))
+        self.assertTrue(should_carry_cast_marker("ZoneType_Stack", "ZoneType_Graveyard"))
+        self.assertFalse(should_carry_cast_marker("ZoneType_Hand", "ZoneType_Stack"))
+        self.assertFalse(should_carry_cast_marker("ZoneType_Battlefield", "ZoneType_Hand"))
+        self.assertFalse(should_carry_cast_marker("ZoneType_Battlefield", "ZoneType_Command"))
+        self.assertEqual(
+            phrase_mana_tap(
+                "Relic of Legends",
+                "Opponent",
+                "A-Acererak the Archlich",
+                "B",
+            ),
+            "Relic of Legends ability: Opponent taps A-Acererak the Archlich for B",
+        )
 
     def test_commander_wording(self):
         """Check commander wording."""
@@ -1848,6 +2097,30 @@ class WordingTests(unittest.TestCase):
                 {8: "flying", 12: "lifelink", 999: "draw a card"},
             ),
             ["flying", "lifelink"],
+        )
+
+    def test_engine_keyword_summary_handles_current_carddb_and_rejects_sentences(self):
+        """Check concise keywords render without misreading rules sentences."""
+        self.assertEqual(
+            engine_keyword_summary(
+                [
+                    {"grpId": 13},
+                    {"grpId": 211},
+                    {"grpId": 500},
+                    {"grpId": 501},
+                ],
+                {
+                    13: "reach",
+                    211: "ward—pay 2 life",
+                    500: "Creatures you control have flying.",
+                    501: "Flying and vigilance",
+                },
+            ),
+            ["reach", "ward—pay 2 life", "flying", "vigilance"],
+        )
+        self.assertEqual(
+            concise_engine_keyword_labels("Protection from red."),
+            ["protection from red"],
         )
 
     def test_board_token_and_power_toughness_wording(self):
@@ -2089,6 +2362,14 @@ class WordingTests(unittest.TestCase):
                 "Temple Garden",
                 1080,
                 {"type": "GameObjectType_Card", "cardTypes": ["CardType_Land"]},
+                emitted,
+            )
+        )
+        self.assertFalse(
+            should_infer_missing_cast_before_resolve(
+                "Dungeon of the Mad Mage",
+                1081,
+                {"type": "GameObjectType_Card", "cardTypes": ["CardType_Dungeon"]},
                 emitted,
             )
         )
