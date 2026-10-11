@@ -3943,11 +3943,13 @@ def archived_transcript_matches(db_path: Path) -> list[dict]:
                 g.game_index,
                 g.has_result,
                 tv.id,
+                tv.format,
                 tv.content
             FROM games g
             JOIN matches m ON m.id = g.match_row_id
             JOIN transcript_versions tv
-              ON tv.game_id = g.id AND tv.format = 'plain_text'
+              ON tv.game_id = g.id
+             AND tv.format IN ('plain_text', 'plain_text_reduced')
             ORDER BY g.game_archive_index, tv.id
             """
         )
@@ -3955,9 +3957,19 @@ def archived_transcript_matches(db_path: Path) -> list[dict]:
     con.close()
     best_rows = {}
     for row in rows:
-        game_archive_index, match_id, match_archive_index, game_index, has_result, version_id, transcript = row
+        (
+            game_archive_index,
+            match_id,
+            match_archive_index,
+            game_index,
+            has_result,
+            version_id,
+            transcript_format,
+            transcript,
+        ) = row
         score = (
             1 if transcript_has_state_blocks(transcript) else 0,
+            1 if transcript_format == "plain_text" else 0,
             1 if re.search(r"^(?:Winner|Match winner):", transcript, re.MULTILINE) else 0,
             version_id,
         )
@@ -3976,6 +3988,7 @@ def archived_transcript_matches(db_path: Path) -> list[dict]:
                 game_index,
                 has_result,
                 _version_id,
+                _transcript_format,
                 transcript,
             ),
         ) = best_rows[game_archive_index]
